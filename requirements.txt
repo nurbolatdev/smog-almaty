@@ -1,0 +1,11 @@
+pandas
+numpy
+requests
+python-dotenv
+matplotlib
+seaborn
+scipy
+scikit-learn
+jupyter
+pytest
+ruff
