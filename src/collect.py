@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
@@ -72,3 +73,32 @@ def parse_sensor_period(data: dict) -> dict:
         "datetime_first_utc": sensor["datetimeFirst"]["utc"],
         "datetime_last_utc": sensor["datetimeLast"]["utc"],
     }
+
+
+def check_station_info(info: dict) -> None:
+    """Проверяет, что станция в Алматы, сенсор задан и период не перепутан."""
+    assert 43.0 < info["latitude"] < 43.5, "станция не в Алматы: широта вне рамки"
+    assert 76.6 < info["longitude"] < 77.2, "станция не в Алматы: долгота вне рамки"
+    assert info["sensor_id"] > 0, "sensor_id должен быть положительным"
+    first = datetime.fromisoformat(info["datetime_first_utc"])
+    last = datetime.fromisoformat(info["datetime_last_utc"])
+    assert first < last, "начало периода должно быть раньше конца"
+
+
+def get_station_info(location_id: int = LOCATION_ID) -> dict:
+    """Возвращает координаты станции, id сенсора PM2.5 и период его данных (UTC)."""
+    api_key = get_api_key()
+    # Запрос 1: локация -> координаты и id сенсора PM2.5
+    location_data = get_json(f"{BASE_URL}/locations/{location_id}", api_key)
+    info = parse_location(location_data)
+    # Запрос 2: сенсор -> период его данных
+    sensor_data = get_json(f"{BASE_URL}/sensors/{info['sensor_id']}", api_key)
+    info.update(parse_sensor_period(sensor_data))
+    check_station_info(info)
+    return info
+
+
+if __name__ == "__main__":
+    station_info = get_station_info()
+    for key, value in station_info.items():
+        print(f"{key}: {value}")
