@@ -116,6 +116,12 @@ def test_parse_location():
     }
 
 
+def test_parse_location_rejects_wrong_units():
+    data = make_location_response([make_sensor(2, "pm25", units="ppm")])
+    with pytest.raises(AssertionError):
+        collect.parse_location(data)
+
+
 def test_parse_sensor_period():
     data = {
         "results": [
@@ -177,3 +183,15 @@ def test_get_station_info_rejects_coordinates_outside_almaty(monkeypatch):
     patch_station_requests(monkeypatch, location_response)
     with pytest.raises(AssertionError):
         collect.get_station_info()
+
+
+def test_check_station_info_rejects_non_integer_sensor_id():
+    info = {
+        "latitude": 43.25,
+        "longitude": 76.93,
+        "sensor_id": "2",
+        "datetime_first_utc": "2020-04-09T17:00:00Z",
+        "datetime_last_utc": "2025-11-14T11:00:00Z",
+    }
+    with pytest.raises(AssertionError):
+        collect.check_station_info(info)

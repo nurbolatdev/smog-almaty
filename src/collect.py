@@ -53,10 +53,9 @@ def parse_location(data: dict) -> dict:
     """Достаёт из ответа /locations имя, координаты и id сенсора PM2.5."""
     location = data["results"][0]
     sensor_id = find_pm25_sensor_id(location["sensors"])
-    # Единицы проверяем один раз: анализ дальше ведётся в µg/m³
-    for sensor in location["sensors"]:
-        if sensor["id"] == sensor_id:
-            assert sensor["parameter"]["units"] == "µg/m³", "PM2.5 не в µg/m³"
+    # Находим сенсор PM2.5 и один раз проверяем единицы: анализ ведётся в µg/m³
+    pm25_sensor = [s for s in location["sensors"] if s["id"] == sensor_id][0]
+    assert pm25_sensor["parameter"]["units"] == "µg/m³", "PM2.5 не в µg/m³"
     return {
         "location_id": location["id"],
         "name": location["name"],
@@ -79,6 +78,7 @@ def check_station_info(info: dict) -> None:
     """Проверяет, что станция в Алматы, сенсор задан и период не перепутан."""
     assert 43.0 < info["latitude"] < 43.5, "станция не в Алматы: широта вне рамки"
     assert 76.6 < info["longitude"] < 77.2, "станция не в Алматы: долгота вне рамки"
+    assert isinstance(info["sensor_id"], int), "sensor_id должен быть целым числом"
     assert info["sensor_id"] > 0, "sensor_id должен быть положительным"
     first = datetime.fromisoformat(info["datetime_first_utc"])
     last = datetime.fromisoformat(info["datetime_last_utc"])
