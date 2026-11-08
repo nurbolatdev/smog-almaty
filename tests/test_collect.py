@@ -71,3 +71,60 @@ def test_get_api_key_missing(monkeypatch):
     monkeypatch.delenv("OPENAQ_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         collect.get_api_key()
+
+
+def make_sensor(sensor_id, name, units="µg/m³"):
+    """Фиктивный сенсор в той же форме, что в ответе OpenAQ."""
+    return {"id": sensor_id, "parameter": {"name": name, "units": units}}
+
+
+def make_location_response(sensors):
+    """Фиктивный ответ /locations/8876 с урезанными полями."""
+    location = {
+        "id": 8876,
+        "name": "Almaty",
+        "coordinates": {"latitude": 43.25, "longitude": 76.93},
+        "sensors": sensors,
+    }
+    return {"results": [location]}
+
+
+def test_find_pm25_sensor_id_picks_pm25():
+    sensors = [make_sensor(1, "pm10"), make_sensor(2, "pm25"), make_sensor(3, "temperature", "c")]
+    assert collect.find_pm25_sensor_id(sensors) == 2
+
+
+def test_find_pm25_sensor_id_none_found():
+    with pytest.raises(ValueError):
+        collect.find_pm25_sensor_id([make_sensor(1, "pm10")])
+
+
+def test_find_pm25_sensor_id_two_found():
+    with pytest.raises(ValueError):
+        collect.find_pm25_sensor_id([make_sensor(1, "pm25"), make_sensor(2, "pm25")])
+
+
+def test_parse_location():
+    data = make_location_response([make_sensor(1, "pm10"), make_sensor(2, "pm25")])
+    result = collect.parse_location(data)
+    assert result == {
+        "location_id": 8876,
+        "name": "Almaty",
+        "latitude": 43.25,
+        "longitude": 76.93,
+        "sensor_id": 2,
+    }
+
+
+def test_parse_sensor_period():
+    data = {
+        "results": [
+            {
+                "datetimeFirst": {"utc": "2020-04-09T17:00:00Z", "local": "x"},
+                "datetimeLast": {"utc": "2025-11-14T11:00:00Z", "local": "y"},
+            }
+        ]
+    }
+    result = collect.parse_sensor_period(data)
+    assert result["datetime_first_utc"] == "2020-04-09T17:00:00Z"
+    assert result["datetime_last_utc"] == "2025-11-14T11:00:00Z"
