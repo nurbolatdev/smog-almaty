@@ -1,5 +1,6 @@
 """Тесты src/collect.py: сеть подменена, настоящих запросов нет."""
 
+import pandas as pd
 import pytest
 import requests
 
@@ -27,7 +28,7 @@ def patch_network(monkeypatch, responses):
     sleep_calls = []
 
     def fake_get(url, headers=None, params=None, timeout=None):
-        get_calls.append({"url": url, "headers": headers})
+        get_calls.append({"url": url, "headers": headers, "params": params})
         return responses[len(get_calls) - 1]
 
     monkeypatch.setattr(collect.requests, "get", fake_get)
@@ -195,3 +196,181 @@ def test_check_station_info_rejects_non_integer_sensor_id():
     }
     with pytest.raises(AssertionError):
         collect.check_station_info(info)
+
+
+def test_make_year_windows_are_adjacent():
+    windows = collect.make_year_windows("2020-04-09T16:00:00Z", "2022-03-01T11:00:00Z")
+    assert windows == [
+        ("2020-04-09T16:00:00Z", "2021-01-01T00:00:00Z"),
+        ("2021-01-01T00:00:00Z", "2022-01-01T00:00:00Z"),
+        ("2022-01-01T00:00:00Z", "2022-03-01T11:00:00Z"),
+    ]
+
+
+def test_make_year_windows_inside_one_year():
+    windows = collect.make_year_windows("2025-02-01T00:00:00Z", "2025-03-01T00:00:00Z")
+    assert windows == [("2025-02-01T00:00:00Z", "2025-03-01T00:00:00Z")]
+
+
+def test_fetch_sensor_measurements_stops_on_empty_page(monkeypatch):
+    responses = [
+        FakeResponse(200, {"results": [{"value": 1}, {"value": 2}]}),
+        FakeResponse(200, {"results": [{"value": 3}]}),
+        FakeResponse(200, {"results": []}),
+    ]
+    get_calls, sleep_calls = patch_network(monkeypatch, responses)
+    results = collect.fetch_sensor_measurements(
+        25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key"
+    )
+    assert len(results) == 3
+    assert len(get_calls) == 3
+    assert [call["params"]["page"] for call in get_calls] == [1, 2, 3]
+    assert len(sleep_calls) == 2
+
+
+def test_fetch_sensor_measurements_sends_period_and_limit(monkeypatch):
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, {"results": []})])
+    collect.fetch_sensor_measurements(25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key")
+    assert get_calls[0]["url"].endswith("/sensors/25903/measurements")
+    params = get_calls[0]["params"]
+    assert params["datetime_from"] == "2025-01-01T00:00:00Z"
+    assert params["datetime_to"] == "2025-02-01T00:00:00Z"
+    assert params["limit"] == 1000
+    assert params["page"] == 1
+
+
+def test_fetch_sensor_measurements_raises_when_pages_do_not_end(monkeypatch):
+    responses = [FakeResponse(200, {"results": [{"value": 1}]})] * 3
+    get_calls, _ = patch_network(monkeypatch, responses)
+    with pytest.raises(RuntimeError):
+        collect.fetch_sensor_measurements(
+            25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key", max_pages=3
+        )
+    assert len(get_calls) == 3
+
+
+def test_fetch_period_measurements_requests_each_year(monkeypatch):
+    # Окно 2024: одна запись и пустая страница; окно 2025: сразу пустая страница
+    responses = [
+        FakeResponse(200, {"results": [{"value": 1}]}),
+        FakeResponse(200, {"results": []}),
+        FakeResponse(200, {"results": []}),
+    ]
+    get_calls, _ = patch_network(monkeypatch, responses)
+    results = collect.fetch_period_measurements(
+        25903, "2024-06-01T00:00:00Z", "2025-03-01T00:00:00Z", "key"
+    )
+    assert results == [{"value": 1}]
+    assert get_calls[0]["params"]["datetime_to"] == "2025-01-01T00:00:00Z"
+    assert get_calls[2]["params"]["datetime_from"] == "2025-01-01T00:00:00Z"
+
+
+def make_measurement(datetime_from, datetime_to, value, name="pm25", units="µg/m³"):
+    """Запись измерения в форме ответа API."""
+    return {
+        "value": value,
+        "flagInfo": {"hasFlags": False},
+        "parameter": {"name": name, "units": units},
+        "period": {
+            "datetimeFrom": {"utc": datetime_from},
+            "datetimeTo": {"utc": datetime_to},
+        },
+    }
+
+
+def make_table(times, values=None):
+    """Таблица в формате сырого файла: метка конца часа и значения."""
+    if values is None:
+        values = [10.0] * len(times)
+    return pd.DataFrame(
+        {
+            "datetime_from_utc": times,
+            "datetime_to_utc": times,
+            "pm25": values,
+            "has_flags": [False] * len(times),
+        }
+    )
+
+
+def test_measurements_to_dataframe_keeps_raw_columns():
+    results = [
+        make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0),
+        make_measurement("2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", 12.5),
+    ]
+    df = collect.measurements_to_dataframe(results)
+    assert list(df.columns) == ["datetime_from_utc", "datetime_to_utc", "pm25", "has_flags"]
+    assert list(df["pm25"]) == [10.0, 12.5]
+    assert df["datetime_to_utc"][1] == "2024-01-01T02:00:00Z"
+
+
+def test_measurements_to_dataframe_rejects_other_parameter():
+    results = [make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0, name="pm10")]
+    with pytest.raises(AssertionError):
+        collect.measurements_to_dataframe(results)
+
+
+def test_measurements_to_dataframe_rejects_wrong_units():
+    results = [make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0, units="ppm")]
+    with pytest.raises(AssertionError):
+        collect.measurements_to_dataframe(results)
+
+
+def test_check_pm25_export_accepts_valid_table():
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"])
+    collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_time_outside_period():
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T05:00:00Z"])
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_bad_datetime():
+    df = make_table(["2024-01-01T01:00:00Z", "not a date"])
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_more_rows_than_hours():
+    # Период 2 часа (from, to] вмещает 2 строки, пришло 3
+    times = ["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", "2024-01-01T02:00:00Z"]
+    df = make_table(times)
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_download_pm25_combines_steps(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", lambda: "test-key")
+    records = [
+        make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0),
+        make_measurement("2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", 12.5),
+    ]
+    responses = [
+        FakeResponse(200, {"results": records}),
+        FakeResponse(200, {"results": []}),
+    ]
+    patch_network(monkeypatch, responses)
+    df = collect.download_pm25(25903, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+    assert df.shape == (2, 4)
+    assert list(df.columns) == ["datetime_from_utc", "datetime_to_utc", "pm25", "has_flags"]
+
+
+def test_save_raw_csv_writes_file(tmp_path):
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"], [10.0, 12.5])
+    path = str(tmp_path / "raw.csv")
+    collect.save_raw_csv(df, path)
+    saved = pd.read_csv(path)
+    assert list(saved.columns) == list(df.columns)
+    assert list(saved["pm25"]) == [10.0, 12.5]
+
+
+def test_save_raw_csv_refuses_to_overwrite(tmp_path):
+    path = str(tmp_path / "raw.csv")
+    collect.save_raw_csv(make_table(["2024-01-01T01:00:00Z"], [10.0]), path)
+    with open(path) as file:
+        before = file.read()
+    with pytest.raises(FileExistsError):
+        collect.save_raw_csv(make_table(["2024-01-01T02:00:00Z"], [99.0]), path)
+    with open(path) as file:
+        assert file.read() == before

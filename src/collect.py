@@ -1,14 +1,33 @@
-"""Сбор данных из API OpenAQ v3: метаданные станции и запросы с повтором."""
+"""Сбор данных из API OpenAQ v3: метаданные станции, выгрузка почасовых измерений PM2.5."""
 
 import os
 import time
 from datetime import datetime
 
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
 BASE_URL = "https://api.openaq.org/v3"
 LOCATION_ID = 8876
+
+# Сенсор и период из задачи 1.1 (python -m src.collect, 2026-11-08).
+# datetime_from на час раньше первой метки: окно API (from, to], первая строка to=17:00
+SENSOR_ID = 25903
+PERIOD_FROM_UTC = "2020-04-09T16:00:00Z"
+PERIOD_TO_UTC = "2025-11-14T11:00:00Z"
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+PAGE_LIMIT = 1000
+# Лимит OpenAQ — 60 запросов в минуту: пауза 1 с после каждой непустой страницы;
+# всего 47 запросов, это меньше лимита 60 в минуту
+PAUSE_SECONDS = 1
+# Колонки сырого файла: путь в JSON -> имя колонки (значения не меняем)
+RAW_COLUMNS = {
+    "period.datetimeFrom.utc": "datetime_from_utc",
+    "period.datetimeTo.utc": "datetime_to_utc",
+    "value": "pm25",
+    "flagInfo.hasFlags": "has_flags",
+}
 
 
 def get_api_key() -> str:
@@ -96,6 +115,103 @@ def get_station_info(location_id: int = LOCATION_ID) -> dict:
     info.update(parse_sensor_period(sensor_data))
     check_station_info(info)
     return info
+
+
+def make_year_windows(datetime_from: str, datetime_to: str) -> list[tuple[str, str]]:
+    """Режет период на окна по календарным годам; конец одного окна = начало следующего."""
+    start = datetime.strptime(datetime_from, TIME_FORMAT)
+    end = datetime.strptime(datetime_to, TIME_FORMAT)
+    windows = []
+    window_from = start
+    while window_from < end:
+        new_year = datetime(window_from.year + 1, 1, 1)
+        window_to = min(new_year, end)
+        windows.append((window_from.strftime(TIME_FORMAT), window_to.strftime(TIME_FORMAT)))
+        window_from = window_to
+    return windows
+
+
+def fetch_sensor_measurements(
+    sensor_id: int,
+    datetime_from: str,
+    datetime_to: str,
+    api_key: str,
+    max_pages: int = 100,
+) -> list[dict]:
+    """Скачивает все страницы измерений сенсора за одно окно, пока не придёт пустая."""
+    url = f"{BASE_URL}/sensors/{sensor_id}/measurements"
+    results = []
+    for page in range(1, max_pages + 1):
+        params = {
+            "datetime_from": datetime_from,
+            "datetime_to": datetime_to,
+            "limit": PAGE_LIMIT,
+            "page": page,
+        }
+        data = get_json(url, api_key, params=params)
+        if len(data["results"]) == 0:
+            return results
+        results.extend(data["results"])
+        print(f"page {page}: {len(data['results'])} rows")
+        # Пауза после каждой непустой страницы из-за лимита запросов
+        time.sleep(PAUSE_SECONDS)
+    raise RuntimeError(f"No empty page after {max_pages} pages: pagination did not end")
+
+
+def fetch_period_measurements(
+    sensor_id: int, datetime_from: str, datetime_to: str, api_key: str
+) -> list[dict]:
+    """Скачивает измерения за весь период по годовым окнам (глубокие страницы дают 408)."""
+    results = []
+    for window_from, window_to in make_year_windows(datetime_from, datetime_to):
+        print(f"window: {window_from} .. {window_to}")
+        results.extend(fetch_sensor_measurements(sensor_id, window_from, window_to, api_key))
+    return results
+
+
+def measurements_to_dataframe(results: list[dict]) -> pd.DataFrame:
+    """Превращает список записей API в таблицу с нужными колонками, значения не меняет."""
+    assert len(results) > 0, "API не вернул ни одной записи"
+    df = pd.json_normalize(results)
+    assert (df["parameter.name"] == "pm25").all(), "в данных не только pm25"
+    assert (df["parameter.units"] == "µg/m³").all(), "PM2.5 не в µg/m³"
+    return df[list(RAW_COLUMNS)].rename(columns=RAW_COLUMNS)
+
+
+def check_pm25_export(df: pd.DataFrame, datetime_from: str, datetime_to: str) -> None:
+    """Проверяет выгрузку: колонки, даты, период (from, to] по datetime_to_utc, число строк."""
+    assert len(df) > 0, "таблица пустая"
+    assert list(df.columns) == list(RAW_COLUMNS.values()), "колонки не те, что ожидали"
+    times = pd.to_datetime(df["datetime_to_utc"], utc=True, format=TIME_FORMAT, errors="coerce")
+    assert times.isna().sum() == 0, "есть даты, которые не удалось разобрать"
+    start = pd.Timestamp(datetime_from)
+    end = pd.Timestamp(datetime_to)
+    # Окно API (from, to]: начало не включается, конец включается
+    assert times.min() > start, "есть метки не позже начала периода"
+    assert times.max() <= end, "есть метки позже конца периода"
+    assert pd.api.types.is_numeric_dtype(df["pm25"]), "pm25 не число"
+    max_rows = (end - start) / pd.Timedelta(hours=1)
+    assert len(df) <= max_rows, "строк больше, чем часов: повтор страниц"
+
+
+def download_pm25(
+    sensor_id: int = SENSOR_ID,
+    datetime_from: str = PERIOD_FROM_UTC,
+    datetime_to: str = PERIOD_TO_UTC,
+) -> pd.DataFrame:
+    """Выгружает PM2.5 за период по годам и возвращает проверенную таблицу, на диск не пишет."""
+    api_key = get_api_key()
+    results = fetch_period_measurements(sensor_id, datetime_from, datetime_to, api_key)
+    df = measurements_to_dataframe(results)
+    check_pm25_export(df, datetime_from, datetime_to)
+    return df
+
+
+def save_raw_csv(df: pd.DataFrame, path: str) -> None:
+    """Сохраняет сырую таблицу в CSV; существующий файл не перезаписывает."""
+    if os.path.exists(path):
+        raise FileExistsError(f"{path} already exists: raw data is never overwritten")
+    df.to_csv(path, index=False)
 
 
 if __name__ == "__main__":
