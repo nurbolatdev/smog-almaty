@@ -338,3 +338,39 @@ def test_check_pm25_export_rejects_more_rows_than_hours():
     df = make_table(times)
     with pytest.raises(AssertionError):
         collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_download_pm25_combines_steps(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", lambda: "test-key")
+    records = [
+        make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0),
+        make_measurement("2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", 12.5),
+    ]
+    responses = [
+        FakeResponse(200, {"results": records}),
+        FakeResponse(200, {"results": []}),
+    ]
+    patch_network(monkeypatch, responses)
+    df = collect.download_pm25(25903, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+    assert df.shape == (2, 4)
+    assert list(df.columns) == ["datetime_from_utc", "datetime_to_utc", "pm25", "has_flags"]
+
+
+def test_save_raw_csv_writes_file(tmp_path):
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"], [10.0, 12.5])
+    path = str(tmp_path / "raw.csv")
+    collect.save_raw_csv(df, path)
+    saved = pd.read_csv(path)
+    assert list(saved.columns) == list(df.columns)
+    assert list(saved["pm25"]) == [10.0, 12.5]
+
+
+def test_save_raw_csv_refuses_to_overwrite(tmp_path):
+    path = str(tmp_path / "raw.csv")
+    collect.save_raw_csv(make_table(["2024-01-01T01:00:00Z"], [10.0]), path)
+    with open(path) as file:
+        before = file.read()
+    with pytest.raises(FileExistsError):
+        collect.save_raw_csv(make_table(["2024-01-01T02:00:00Z"], [99.0]), path)
+    with open(path) as file:
+        assert file.read() == before

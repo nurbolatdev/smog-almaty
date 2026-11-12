@@ -193,6 +193,26 @@ def check_pm25_export(df: pd.DataFrame, datetime_from: str, datetime_to: str) ->
     assert len(df) <= max_rows, "строк больше, чем часов: повтор страниц"
 
 
+def download_pm25(
+    sensor_id: int = SENSOR_ID,
+    datetime_from: str = PERIOD_FROM_UTC,
+    datetime_to: str = PERIOD_TO_UTC,
+) -> pd.DataFrame:
+    """Выгружает PM2.5 за период по годам и возвращает проверенную таблицу, на диск не пишет."""
+    api_key = get_api_key()
+    results = fetch_period_measurements(sensor_id, datetime_from, datetime_to, api_key)
+    df = measurements_to_dataframe(results)
+    check_pm25_export(df, datetime_from, datetime_to)
+    return df
+
+
+def save_raw_csv(df: pd.DataFrame, path: str) -> None:
+    """Сохраняет сырую таблицу в CSV; существующий файл не перезаписывает."""
+    if os.path.exists(path):
+        raise FileExistsError(f"{path} already exists: raw data is never overwritten")
+    df.to_csv(path, index=False)
+
+
 if __name__ == "__main__":
     station_info = get_station_info()
     for key, value in station_info.items():
