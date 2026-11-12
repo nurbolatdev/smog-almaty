@@ -27,7 +27,7 @@ def patch_network(monkeypatch, responses):
     sleep_calls = []
 
     def fake_get(url, headers=None, params=None, timeout=None):
-        get_calls.append({"url": url, "headers": headers})
+        get_calls.append({"url": url, "headers": headers, "params": params})
         return responses[len(get_calls) - 1]
 
     monkeypatch.setattr(collect.requests, "get", fake_get)
@@ -195,3 +195,70 @@ def test_check_station_info_rejects_non_integer_sensor_id():
     }
     with pytest.raises(AssertionError):
         collect.check_station_info(info)
+
+
+def test_make_year_windows_are_adjacent():
+    windows = collect.make_year_windows("2020-04-09T16:00:00Z", "2022-03-01T11:00:00Z")
+    assert windows == [
+        ("2020-04-09T16:00:00Z", "2021-01-01T00:00:00Z"),
+        ("2021-01-01T00:00:00Z", "2022-01-01T00:00:00Z"),
+        ("2022-01-01T00:00:00Z", "2022-03-01T11:00:00Z"),
+    ]
+
+
+def test_make_year_windows_inside_one_year():
+    windows = collect.make_year_windows("2025-02-01T00:00:00Z", "2025-03-01T00:00:00Z")
+    assert windows == [("2025-02-01T00:00:00Z", "2025-03-01T00:00:00Z")]
+
+
+def test_fetch_sensor_measurements_stops_on_empty_page(monkeypatch):
+    responses = [
+        FakeResponse(200, {"results": [{"value": 1}, {"value": 2}]}),
+        FakeResponse(200, {"results": [{"value": 3}]}),
+        FakeResponse(200, {"results": []}),
+    ]
+    get_calls, sleep_calls = patch_network(monkeypatch, responses)
+    results = collect.fetch_sensor_measurements(
+        25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key"
+    )
+    assert len(results) == 3
+    assert len(get_calls) == 3
+    assert [call["params"]["page"] for call in get_calls] == [1, 2, 3]
+    assert len(sleep_calls) == 2
+
+
+def test_fetch_sensor_measurements_sends_period_and_limit(monkeypatch):
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, {"results": []})])
+    collect.fetch_sensor_measurements(25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key")
+    assert get_calls[0]["url"].endswith("/sensors/25903/measurements")
+    params = get_calls[0]["params"]
+    assert params["datetime_from"] == "2025-01-01T00:00:00Z"
+    assert params["datetime_to"] == "2025-02-01T00:00:00Z"
+    assert params["limit"] == 1000
+    assert params["page"] == 1
+
+
+def test_fetch_sensor_measurements_raises_when_pages_do_not_end(monkeypatch):
+    responses = [FakeResponse(200, {"results": [{"value": 1}]})] * 3
+    get_calls, _ = patch_network(monkeypatch, responses)
+    with pytest.raises(RuntimeError):
+        collect.fetch_sensor_measurements(
+            25903, "2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z", "key", max_pages=3
+        )
+    assert len(get_calls) == 3
+
+
+def test_fetch_period_measurements_requests_each_year(monkeypatch):
+    # Окно 2024: одна запись и пустая страница; окно 2025: сразу пустая страница
+    responses = [
+        FakeResponse(200, {"results": [{"value": 1}]}),
+        FakeResponse(200, {"results": []}),
+        FakeResponse(200, {"results": []}),
+    ]
+    get_calls, _ = patch_network(monkeypatch, responses)
+    results = collect.fetch_period_measurements(
+        25903, "2024-06-01T00:00:00Z", "2025-03-01T00:00:00Z", "key"
+    )
+    assert results == [{"value": 1}]
+    assert get_calls[0]["params"]["datetime_to"] == "2025-01-01T00:00:00Z"
+    assert get_calls[2]["params"]["datetime_from"] == "2025-01-01T00:00:00Z"
