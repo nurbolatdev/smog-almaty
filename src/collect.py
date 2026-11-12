@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime
 
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
@@ -19,6 +20,13 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 PAGE_LIMIT = 1000
 # Лимит OpenAQ — 60 запросов в минуту: не чаще одного запроса в секунду
 PAUSE_SECONDS = 1
+# Колонки сырого файла: путь в JSON -> имя колонки (значения не меняем)
+RAW_COLUMNS = {
+    "period.datetimeFrom.utc": "datetime_from_utc",
+    "period.datetimeTo.utc": "datetime_to_utc",
+    "value": "pm25",
+    "flagInfo.hasFlags": "has_flags",
+}
 
 
 def get_api_key() -> str:
@@ -158,6 +166,31 @@ def fetch_period_measurements(
         print(f"window: {window_from} .. {window_to}")
         results.extend(fetch_sensor_measurements(sensor_id, window_from, window_to, api_key))
     return results
+
+
+def measurements_to_dataframe(results: list[dict]) -> pd.DataFrame:
+    """Превращает список записей API в таблицу с нужными колонками, значения не меняет."""
+    assert len(results) > 0, "API не вернул ни одной записи"
+    df = pd.json_normalize(results)
+    assert (df["parameter.name"] == "pm25").all(), "в данных не только pm25"
+    assert (df["parameter.units"] == "µg/m³").all(), "PM2.5 не в µg/m³"
+    return df[list(RAW_COLUMNS)].rename(columns=RAW_COLUMNS)
+
+
+def check_pm25_export(df: pd.DataFrame, datetime_from: str, datetime_to: str) -> None:
+    """Проверяет выгрузку: колонки, даты, период (from, to] по datetime_to_utc, число строк."""
+    assert len(df) > 0, "таблица пустая"
+    assert list(df.columns) == list(RAW_COLUMNS.values()), "колонки не те, что ожидали"
+    times = pd.to_datetime(df["datetime_to_utc"], utc=True, format=TIME_FORMAT, errors="coerce")
+    assert times.isna().sum() == 0, "есть даты, которые не удалось разобрать"
+    start = pd.Timestamp(datetime_from)
+    end = pd.Timestamp(datetime_to)
+    # Окно API (from, to]: начало не включается, конец включается
+    assert times.min() > start, "есть метки не позже начала периода"
+    assert times.max() <= end, "есть метки позже конца периода"
+    assert pd.api.types.is_numeric_dtype(df["pm25"]), "pm25 не число"
+    max_rows = (end - start) / pd.Timedelta(hours=1)
+    assert len(df) <= max_rows, "строк больше, чем часов: повтор страниц"
 
 
 if __name__ == "__main__":

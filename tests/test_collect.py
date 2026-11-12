@@ -1,5 +1,6 @@
 """Тесты src/collect.py: сеть подменена, настоящих запросов нет."""
 
+import pandas as pd
 import pytest
 import requests
 
@@ -262,3 +263,78 @@ def test_fetch_period_measurements_requests_each_year(monkeypatch):
     assert results == [{"value": 1}]
     assert get_calls[0]["params"]["datetime_to"] == "2025-01-01T00:00:00Z"
     assert get_calls[2]["params"]["datetime_from"] == "2025-01-01T00:00:00Z"
+
+
+def make_measurement(datetime_from, datetime_to, value, name="pm25", units="µg/m³"):
+    """Запись измерения в форме ответа API."""
+    return {
+        "value": value,
+        "flagInfo": {"hasFlags": False},
+        "parameter": {"name": name, "units": units},
+        "period": {
+            "datetimeFrom": {"utc": datetime_from},
+            "datetimeTo": {"utc": datetime_to},
+        },
+    }
+
+
+def make_table(times, values=None):
+    """Таблица в формате сырого файла: метка конца часа и значения."""
+    if values is None:
+        values = [10.0] * len(times)
+    return pd.DataFrame(
+        {
+            "datetime_from_utc": times,
+            "datetime_to_utc": times,
+            "pm25": values,
+            "has_flags": [False] * len(times),
+        }
+    )
+
+
+def test_measurements_to_dataframe_keeps_raw_columns():
+    results = [
+        make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0),
+        make_measurement("2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", 12.5),
+    ]
+    df = collect.measurements_to_dataframe(results)
+    assert list(df.columns) == ["datetime_from_utc", "datetime_to_utc", "pm25", "has_flags"]
+    assert list(df["pm25"]) == [10.0, 12.5]
+    assert df["datetime_to_utc"][1] == "2024-01-01T02:00:00Z"
+
+
+def test_measurements_to_dataframe_rejects_other_parameter():
+    results = [make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0, name="pm10")]
+    with pytest.raises(AssertionError):
+        collect.measurements_to_dataframe(results)
+
+
+def test_measurements_to_dataframe_rejects_wrong_units():
+    results = [make_measurement("2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z", 10.0, units="ppm")]
+    with pytest.raises(AssertionError):
+        collect.measurements_to_dataframe(results)
+
+
+def test_check_pm25_export_accepts_valid_table():
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"])
+    collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_time_outside_period():
+    df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T05:00:00Z"])
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_bad_datetime():
+    df = make_table(["2024-01-01T01:00:00Z", "not a date"])
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
+
+
+def test_check_pm25_export_rejects_more_rows_than_hours():
+    # Период 2 часа (from, to] вмещает 2 строки, пришло 3
+    times = ["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z", "2024-01-01T02:00:00Z"]
+    df = make_table(times)
+    with pytest.raises(AssertionError):
+        collect.check_pm25_export(df, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
