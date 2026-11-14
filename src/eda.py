@@ -1,5 +1,6 @@
 """Таблицы для разведочного анализа и графиков (этап 4)."""
 
+import numpy as np
 import pandas as pd
 from scipy import stats
 
@@ -68,3 +69,56 @@ def spearman_matrix(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Корреляция Спирмена; строки с пропуском в любой колонке убираем."""
     # так все пары считаются на одних и тех же строках
     return df[columns].dropna().corr(method="spearman")
+
+
+def heating_season_label(local_times: pd.Series) -> pd.Series:
+    """Отопительный сезон по местному времени: '2020/21' — с осени 2020 по весну 2021."""
+    # месяцы 1–6 относятся к сезону, начавшемуся в прошлом году;
+    # часы вне отопительного сезона отбрасывает вызывающий код
+    start_year = local_times.dt.year - (local_times.dt.month <= 6).astype(int)
+    return start_year.astype(str) + "/" + (start_year + 1).astype(str).str[-2:]
+
+
+def hour_profile_table(
+    df: pd.DataFrame,
+    value_column: str,
+    group_column: str,
+    hour_column: str = "hour",
+    aggfunc: str = "mean",
+) -> pd.DataFrame:
+    """Суточный профиль: час (строки) × группа (колонки); пустые значения не участвуют."""
+    return df.pivot_table(
+        values=value_column,
+        index=hour_column,
+        columns=group_column,
+        aggfunc=aggfunc,
+    )
+
+
+def smooth_profile(profile: pd.Series, window: int = 3) -> pd.Series:
+    """Скользящее среднее суточного профиля по кругу: после 23 ч идёт 0 ч."""
+    assert len(profile) == 24 and profile.notna().all(), "нужны 24 часа без пропусков"
+    assert window % 2 == 1 and window >= 1, "ширина окна должна быть нечётной"
+    values = profile.to_numpy(dtype=float)
+    half = window // 2
+    total = np.zeros(24, dtype=float)
+    # np.roll переставляет значения по кругу, поэтому 23 ч и 0 ч соседствуют
+    for shift in range(-half, half + 1):
+        total += np.roll(values, shift)
+    return pd.Series(total / window, index=profile.index)
+
+
+def profile_extremes(table: pd.DataFrame, window: int = 3) -> pd.DataFrame:
+    """Час и значение максимума и минимума сглаженного профиля для каждой колонки."""
+    rows = []
+    for column in table.columns:
+        smooth = smooth_profile(table[column], window)
+        rows.append(
+            {
+                "peak_hour": smooth.idxmax(),
+                "peak": smooth.max(),
+                "low_hour": smooth.idxmin(),
+                "low": smooth.min(),
+            }
+        )
+    return pd.DataFrame(rows, index=table.columns)
