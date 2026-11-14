@@ -103,7 +103,9 @@ def gap_sizes(values: pd.Series) -> pd.Series:
 
 # interpolate(limit=3) заполнил бы первые 3 часа и длинной дыры, а нам нужно
 # не трогать длинную дыру целиком.
-def interpolate_short_gaps(values: pd.Series, max_hours: int = MAX_INTERPOLATION_HOURS):
+def interpolate_short_gaps(
+    values: pd.Series, max_hours: int = MAX_INTERPOLATION_HOURS
+) -> pd.Series:
     """Линейно заполняет только дыры целиком не длиннее max_hours; ряд — на полной сетке."""
     # края ряда не заполняем
     filled = values.interpolate(limit_area="inside")

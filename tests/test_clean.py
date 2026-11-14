@@ -270,7 +270,16 @@ def test_check_clean_pm25_rejects_text_flag():
     table = make_pm25_table()
     table["pm25_interpolated"] = ["True", "False"] * 4
 
-    with pytest.raises(AssertionError):
+    # строки ловит раньше проверка «колонка — число» в check_clean_hourly
+    with pytest.raises(AssertionError, match="не число"):
+        clean.check_clean_pm25(table)
+
+
+def test_check_clean_pm25_rejects_integer_flag():
+    table = make_pm25_table()
+    table["pm25_interpolated"] = [0, 1, 0, 0, 0, 0, 0, 0]
+
+    with pytest.raises(AssertionError, match="не True/False"):
         clean.check_clean_pm25(table)
 
 
