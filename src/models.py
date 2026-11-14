@@ -2,7 +2,12 @@
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.inspection import permutation_importance
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def make_model_table(
@@ -96,3 +101,68 @@ def bootstrap_mae_diff(
         idx = rng.choice(n, size=n, replace=True)
         diffs[i] = float(np.mean(err_a[idx]) - np.mean(err_b[idx]))
     return diffs
+
+
+def make_linear_model() -> Pipeline:
+    """Создаёт конвейер стандартизации признаков и линейной регрессии."""
+    # StandardScaler внутри Pipeline учится только на данных fit (train), поэтому утечки нет;
+    # на прогноз линейной регрессии масштаб не влияет, но делает коэффициенты сравнимыми
+    return Pipeline([("scale", StandardScaler()), ("linreg", LinearRegression())])
+
+
+def make_forest(
+    n_estimators: int, max_depth: int, min_samples_leaf: int, seed: int = 42
+) -> RandomForestRegressor:
+    """Создаёт Random Forest с заданными параметрами и фиксированным seed."""
+    assert n_estimators >= 1 and max_depth >= 1 and min_samples_leaf >= 1, (
+        "параметры леса должны быть >= 1"
+    )
+    # деревья режут признаки по порогам, поэтому масштабирование лесу не нужно;
+    # random_state фиксирует случайность обучения для воспроизводимости
+    return RandomForestRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        random_state=seed,
+        n_jobs=-1,
+    )
+
+
+def linear_coefficients(pipeline: Pipeline, feature_columns: list[str]) -> pd.DataFrame:
+    """Возвращает коэффициенты линейной модели (на 1 std и в исходных единицах)."""
+    scaler = pipeline.named_steps["scale"]
+    linreg = pipeline.named_steps["linreg"]
+    assert hasattr(linreg, "coef_"), "модель должна быть обучена до чтения коэффициентов"
+    assert len(feature_columns) == len(linreg.coef_), "число признаков не совпадает с моделью"
+    coef_std = linreg.coef_
+    # переводим коэффициент на 1 std в исходные единицы: coef_original = coef_std / scale_
+    coef_original = coef_std / scaler.scale_
+    table = pd.DataFrame(
+        {"feature": feature_columns, "coef_std": coef_std, "coef_original": coef_original}
+    )
+    return table.sort_values("coef_std", key=np.abs, ascending=False).reset_index(drop=True)
+
+
+def permutation_table(
+    model,
+    X: pd.DataFrame,
+    y: pd.Series | np.ndarray,
+    n_repeats: int = 30,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Считает перестановочную важность признаков (рост MAE при перемешивании столбца)."""
+    assert len(X) == len(y) and len(X) > 0, "X и y должны быть непустыми и равной длины"
+    assert not X.isna().any().any() and not pd.isna(y).any(), "в данных есть пропуски"
+    assert n_repeats >= 1, "число повторов должно быть >= 1"
+    # при scoring='neg_mean_absolute_error' importances_mean даёт рост MAE со знаком +
+    result = permutation_importance(
+        model, X, y, scoring="neg_mean_absolute_error", n_repeats=n_repeats, random_state=seed
+    )
+    table = pd.DataFrame(
+        {
+            "feature": list(X.columns),
+            "mae_increase": result.importances_mean,
+            "mae_increase_std": result.importances_std,
+        }
+    )
+    return table.sort_values("mae_increase", ascending=False).reset_index(drop=True)

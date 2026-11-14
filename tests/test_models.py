@@ -111,3 +111,68 @@ def test_bootstrap_mae_diff_paired():
     same_1 = models.bootstrap_mae_diff(y, y + 1.0, pred_b, n_boot=100, seed=7)
     same_2 = models.bootstrap_mae_diff(y, y + 1.0, pred_b, n_boot=100, seed=7)
     assert np.array_equal(same_1, same_2)
+
+
+def test_linear_model_scaler_fitted_on_train_only():
+    X_train = pd.DataFrame({"x1": [1.0, 2.0, 3.0, 4.0], "x2": [10.0, 20.0, 30.0, 40.0]})
+    y_train = pd.Series([2.0, 4.0, 6.0, 8.0])
+    X_test = X_train + 1000.0
+
+    model = models.make_linear_model()
+    model.fit(X_train, y_train)
+    _ = model.predict(X_test)
+
+    scale_mean = model.named_steps["scale"].mean_
+    assert np.allclose(scale_mean, X_train.mean().to_numpy())
+
+
+def test_linear_coefficients_recover_true_slopes():
+    rng = np.random.default_rng(42)
+    x1 = rng.normal(0.0, 1.0, size=50)
+    x2 = rng.normal(0.0, 5.0, size=50)
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    y = 3.0 * x1 - 2.0 * x2 + 5.0
+
+    model = models.make_linear_model()
+    model.fit(X, y)
+    coef = models.linear_coefficients(model, ["x1", "x2"]).set_index("feature")
+
+    # по модулю |coef_std| у x2 (~10) больше, чем у x1 (~3), поэтому x2 должна идти первой
+    assert coef.index.tolist() == ["x2", "x1"]
+    assert coef.loc["x1", "coef_original"] == pytest.approx(3.0)
+    assert coef.loc["x2", "coef_original"] == pytest.approx(-2.0)
+    assert coef.loc["x1", "coef_std"] == pytest.approx(3.0 * x1.std(ddof=0))
+    assert coef.loc["x2", "coef_std"] == pytest.approx(-2.0 * x2.std(ddof=0))
+
+
+def test_make_forest_reproducible():
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame({"x1": rng.normal(size=40), "x2": rng.normal(size=40)})
+    y = 2.0 * X["x1"] + rng.normal(scale=0.1, size=40)
+
+    forest_a = models.make_forest(n_estimators=20, max_depth=4, min_samples_leaf=3, seed=42)
+    forest_b = models.make_forest(n_estimators=20, max_depth=4, min_samples_leaf=3, seed=42)
+    forest_a.fit(X, y)
+    forest_b.fit(X, y)
+
+    assert forest_a.n_estimators == 20
+    assert forest_a.max_depth == 4
+    assert forest_a.min_samples_leaf == 3
+    assert np.allclose(forest_a.predict(X), forest_b.predict(X))
+
+
+def test_permutation_table_informative_feature_first():
+    rng = np.random.default_rng(7)
+    x1 = np.linspace(0.0, 10.0, 60)
+    x2 = rng.normal(size=60)
+    X = pd.DataFrame({"x1": x1, "x2": x2})
+    y = 4.0 * x1
+
+    model = models.make_linear_model()
+    model.fit(X, y)
+    imp = models.permutation_table(model, X, y, n_repeats=20, seed=42)
+
+    assert imp.columns.tolist() == ["feature", "mae_increase", "mae_increase_std"]
+    assert imp["feature"].tolist() == ["x1", "x2"]
+    assert imp.loc[0, "mae_increase"] > 0.0
+    assert abs(imp.loc[1, "mae_increase"]) < 0.1 * imp.loc[0, "mae_increase"]
