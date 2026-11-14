@@ -131,3 +131,73 @@ def test_iqr_outlier_mask_flags_every_rain_hour_when_iqr_is_zero():
     mask = clean.iqr_outlier_mask(values)
 
     assert mask.tolist() == [False] * 9 + [True]
+
+
+def test_check_clean_hourly_accepts_good_table():
+    table = make_weather_table()
+
+    clean.check_clean_hourly(table, list(table.columns))
+
+
+def test_check_clean_hourly_rejects_string_times():
+    table = make_weather_table()
+    columns = list(table.columns)
+    table["time_utc"] = table["time_utc"].astype(str)
+
+    with pytest.raises(AssertionError):
+        clean.check_clean_hourly(table, columns)
+
+
+def test_check_clean_hourly_rejects_missing_hour():
+    table = make_weather_table(4)
+    columns = list(table.columns)
+    table = table.drop(index=1)
+
+    with pytest.raises(AssertionError, match="1 час"):
+        clean.check_clean_hourly(table, columns)
+
+
+def test_check_clean_hourly_rejects_duplicate_hour():
+    table = make_weather_table()
+    columns = list(table.columns)
+    table = pd.concat([table, table.iloc[[2]]], ignore_index=True)
+
+    with pytest.raises(AssertionError):
+        clean.check_clean_hourly(table, columns)
+
+
+def test_check_clean_hourly_rejects_nan_value():
+    table = make_weather_table()
+    columns = list(table.columns)
+    table.loc[1, "temp_c"] = float("nan")
+
+    with pytest.raises(AssertionError):
+        clean.check_clean_hourly(table, columns)
+
+
+def test_check_clean_hourly_rejects_out_of_range():
+    table = make_weather_table()
+    columns = list(table.columns)
+    table.loc[1, "wind_speed"] = -1.0
+
+    with pytest.raises(AssertionError, match="диапазонов"):
+        clean.check_clean_hourly(table, columns)
+
+
+def test_save_and_read_clean_csv_round_trip(tmp_path):
+    table = make_weather_table()
+    columns = list(table.columns)
+    path = str(tmp_path / "weather_clean.csv")
+
+    clean.save_clean_csv(table, path)
+    with open(path, encoding="utf-8") as file:
+        lines = file.read().splitlines()
+    read = clean.read_clean_csv(path)
+
+    assert lines[1].startswith("2024-02-29T16:00:00+0000")
+    assert read["time_utc"].tolist() == table["time_utc"].tolist()
+    assert str(read["time_utc"].dt.tz) == "UTC"
+    pd.testing.assert_frame_equal(
+        read.drop(columns="time_utc"), table.drop(columns="time_utc")
+    )
+    clean.check_clean_hourly(read, columns)

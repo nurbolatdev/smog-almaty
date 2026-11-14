@@ -60,3 +60,33 @@ def iqr_outlier_mask(values: pd.Series, k: float = 1.5) -> pd.Series:
     q3 = values.quantile(0.75)
     iqr = q3 - q1
     return (values < q1 - k * iqr) | (values > q3 + k * iqr)
+
+
+def check_clean_hourly(df: pd.DataFrame, columns: list[str]) -> None:
+    """Контракт для объединения (3.1): один час UTC — одна строка, без пропусков."""
+    check_columns(df, columns)
+    times = df["time_utc"]
+    assert isinstance(times.dtype, pd.DatetimeTZDtype), "time_utc не дата с часовым поясом"
+    assert str(times.dt.tz) == "UTC", "time_utc не в UTC"
+    assert times.isna().sum() == 0, "в time_utc есть пропуски"
+    assert times.is_unique, "есть повторяющиеся метки"
+    assert times.is_monotonic_increasing, "метки не по порядку"
+    one_hour = times.diff().dropna() == pd.Timedelta(hours=1)
+    assert one_hour.all(), "шаг между метками не 1 час: есть пропавшие часы"
+    for column in columns[1:]:
+        assert pd.api.types.is_numeric_dtype(df[column]), f"{column} не число"
+        assert df[column].isna().sum() == 0, f"в {column} есть пропуски"
+    out_of_range = count_out_of_range(df, VALID_RANGES)
+    assert sum(out_of_range.values()) == 0, f"значения вне диапазонов: {out_of_range}"
+
+
+def save_clean_csv(df: pd.DataFrame, path: str) -> None:
+    """Записывает очищенную таблицу; файл перезаписывается при каждом запуске."""
+    df.to_csv(path, index=False, date_format=PROCESSED_TIME_FORMAT)
+
+
+def read_clean_csv(path: str) -> pd.DataFrame:
+    """Читает очищенную таблицу так, как это делают 2.2 и 3.1."""
+    df = pd.read_csv(path)
+    df["time_utc"] = parse_utc_times(df["time_utc"], PROCESSED_TIME_FORMAT)
+    return df
