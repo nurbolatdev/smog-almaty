@@ -431,6 +431,12 @@ def test_hourly_to_dataframe_rejects_far_coordinates():
         collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
 
 
+def test_hourly_to_dataframe_rejects_far_longitude():
+    data = make_cams_response([1.0], longitude=79.0)
+    with pytest.raises(AssertionError):
+        collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
+
+
 def test_check_hourly_export_accepts_full_day():
     df = make_hourly_table(make_day_times())
     collect.check_hourly_export(df, "2024-01-01", "2024-01-01")
@@ -489,6 +495,9 @@ def test_download_cams_sends_domain_and_pm25(monkeypatch):
     assert call["headers"] == {}
     assert call["params"]["hourly"] == "pm2_5"
     assert call["params"]["domains"] == "cams_global"
+    assert call["params"]["latitude"] == collect.LATITUDE
+    assert call["params"]["longitude"] == collect.LONGITUDE
+    assert call["params"]["timezone"] == "UTC"
     assert df.shape == (24, 2)
     assert list(df.columns) == ["time_utc", "cams_pm25"]
 
