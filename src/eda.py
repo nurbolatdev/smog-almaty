@@ -1,5 +1,8 @@
 """Таблицы для разведочного анализа и графиков (этап 4)."""
 
+from collections.abc import Iterable
+
+import numpy as np
 import pandas as pd
 from scipy import stats
 
@@ -68,3 +71,96 @@ def spearman_matrix(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Корреляция Спирмена; строки с пропуском в любой колонке убираем."""
     # так все пары считаются на одних и тех же строках
     return df[columns].dropna().corr(method="spearman")
+
+
+def heating_season_label(local_times: pd.Series) -> pd.Series:
+    """Отопительный сезон по местному времени: '2020/21' — с осени 2020 по весну 2021."""
+    # месяцы 1–6 относятся к сезону, начавшемуся в прошлом году;
+    # часы вне отопительного сезона отбрасывает вызывающий код
+    start_year = local_times.dt.year - (local_times.dt.month <= 6).astype(int)
+    return start_year.astype(str) + "/" + (start_year + 1).astype(str).str[-2:]
+
+
+def hour_profile_table(
+    df: pd.DataFrame,
+    value_column: str,
+    group_column: str,
+    hour_column: str = "hour",
+    aggfunc: str = "mean",
+) -> pd.DataFrame:
+    """Суточный профиль: час (строки) × группа (колонки); пустые значения не участвуют."""
+    return df.pivot_table(
+        values=value_column,
+        index=hour_column,
+        columns=group_column,
+        aggfunc=aggfunc,
+    )
+
+
+def smooth_profile(profile: pd.Series, window: int = 3) -> pd.Series:
+    """Скользящее среднее суточного профиля по кругу: после 23 ч идёт 0 ч."""
+    assert len(profile) == 24 and profile.notna().all(), "нужны 24 часа без пропусков"
+    assert window % 2 == 1 and window >= 1, "ширина окна должна быть нечётной"
+    values = profile.to_numpy(dtype=float)
+    half = window // 2
+    total = np.zeros(24, dtype=float)
+    # np.roll переставляет значения по кругу, поэтому 23 ч и 0 ч соседствуют
+    for shift in range(-half, half + 1):
+        total += np.roll(values, shift)
+    return pd.Series(total / window, index=profile.index)
+
+
+def profile_extremes(table: pd.DataFrame, window: int = 3) -> pd.DataFrame:
+    """Час и значение максимума и минимума сглаженного профиля для каждой колонки."""
+    rows = []
+    for column in table.columns:
+        smooth = smooth_profile(table[column], window)
+        rows.append(
+            {
+                "peak_hour": smooth.idxmax(),
+                "peak": smooth.max(),
+                "low_hour": smooth.idxmin(),
+                "low": smooth.min(),
+            }
+        )
+    return pd.DataFrame(rows, index=table.columns)
+
+
+def profile_shift(
+    reference: pd.Series, other: pd.Series, max_shift: int = 6
+) -> pd.DataFrame:
+    """Похожесть профилей при сдвиге по кругу; shift = +k — other запаздывает на k ч."""
+    assert len(reference) == len(other) == 24, "нужны два профиля по 24 часа"
+    assert reference.notna().all() and other.notna().all(), "профили не должны содержать пропуски"
+    ref_values = reference.to_numpy(dtype=float)
+    other_values = other.to_numpy(dtype=float)
+    shifts = list(range(-max_shift, max_shift + 1))
+    corrs = []
+    # положительный сдвиг переносит пик reference позже по часам
+    for shift in shifts:
+        corrs.append(float(np.corrcoef(other_values, np.roll(ref_values, shift))[0, 1]))
+    return pd.DataFrame({"shift": shifts, "corr": corrs})
+
+
+def lagged_correlations(
+    df: pd.DataFrame,
+    column: str,
+    other_column: str,
+    lags: Iterable[int],
+    rows: pd.Series | None = None,
+) -> pd.DataFrame:
+    """ρ Спирмена между column и other_column со сдвигом lag ч; +k — column запаздывает на k ч."""
+    steps = df["time_utc"].diff().dropna()
+    assert (steps == pd.Timedelta(hours=1)).all(), (
+        "нужна полная часовая сетка: сдвиг на строку = сдвиг на час"
+    )
+    if rows is None:
+        rows = pd.Series(True, index=df.index)
+    records = []
+    # сдвигаем на всей сетке и только потом отбираем строки,
+    # иначе на стыке сезонов соседними оказались бы часы с разрывом в полгода
+    for lag in lags:
+        pairs = pd.DataFrame({"x": df[column], "y": df[other_column].shift(lag)})[rows].dropna()
+        rho = pairs["x"].corr(pairs["y"], method="spearman")
+        records.append({"lag": lag, "rho": rho, "n": len(pairs)})
+    return pd.DataFrame(records)

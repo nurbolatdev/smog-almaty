@@ -99,3 +99,125 @@ def test_spearman_matrix_monotonic_and_drops_missing():
     assert matrix.loc["x", "neg"] == pytest.approx(-1.0)
     assert matrix.columns.tolist() == ["x", "cube", "neg"]
     assert matrix.index.tolist() == ["x", "cube", "neg"]
+
+
+def test_heating_season_label_boundaries():
+    local_times = pd.Series(
+        pd.to_datetime(["2020-10-15", "2021-04-15", "2021-12-31", "2022-01-01"]).tz_localize(
+            "Asia/Almaty"
+        )
+    )
+
+    labels = eda.heating_season_label(local_times)
+
+    assert labels.tolist() == ["2020/21", "2020/21", "2021/22", "2021/22"]
+
+
+def test_hour_profile_table_mean_and_count():
+    df = pd.DataFrame(
+        {
+            "hour": [0, 0, 0, 1, 0, 1],
+            "group": ["a", "a", "a", "a", "b", "b"],
+            "value": [10.0, 20.0, np.nan, 5.0, 30.0, 40.0],
+        }
+    )
+
+    mean_table = eda.hour_profile_table(df, "value", "group")
+    count_table = eda.hour_profile_table(df, "value", "group", aggfunc="count")
+
+    assert mean_table.loc[0, "a"] == 15.0
+    assert count_table.loc[0, "a"] == 2
+    assert mean_table.columns.tolist() == ["a", "b"]
+
+
+def test_smooth_profile_wraps_around_midnight():
+    profile = pd.Series(0.0, index=range(24))
+    profile.loc[0] = 3.0
+
+    smoothed = eda.smooth_profile(profile)
+
+    assert smoothed.loc[23] == pytest.approx(1.0)
+    assert smoothed.loc[0] == pytest.approx(1.0)
+    assert smoothed.loc[1] == pytest.approx(1.0)
+    assert (smoothed.loc[2:22] == 0.0).all()
+
+    with pytest.raises(AssertionError):
+        eda.smooth_profile(profile.iloc[:23])
+
+
+def test_smooth_profile_rejects_nan():
+    profile = pd.Series(0.0, index=range(24))
+    profile.loc[5] = np.nan
+
+    with pytest.raises(AssertionError):
+        eda.smooth_profile(profile)
+
+
+def test_profile_extremes_ignores_single_hour_spike():
+    hours = np.arange(24)
+    values = np.cos(2 * np.pi * (hours - 14) / 24)
+    # одиночный скачок в 3 ч выше настоящего пика в 14 ч
+    values[3] = 1.5
+    table = pd.DataFrame({"season": pd.Series(values, index=hours)})
+
+    assert table["season"].idxmax() == 3
+
+    extremes = eda.profile_extremes(table)
+
+    # ради этого сглаживаем: одиночный скачок не перебивает широкий пик в 14 ч
+    assert extremes.loc["season", "peak_hour"] == 14
+
+
+def test_profile_shift_finds_one_hour_earlier_peak():
+    hours = np.arange(24)
+    reference = pd.Series(np.cos(2 * np.pi * (hours - 14) / 24), index=hours)
+    other = pd.Series(np.roll(reference.to_numpy(), -1), index=hours)
+
+    table = eda.profile_shift(reference, other)
+
+    assert len(table) == 13
+    best = table.loc[table["corr"].idxmax()]
+    assert best["shift"] == -1
+    assert best["corr"] == pytest.approx(1.0)
+
+
+def test_profile_shift_rejects_nan():
+    hours = np.arange(24)
+    valid = pd.Series(np.cos(2 * np.pi * hours / 24), index=hours)
+    with_nan = valid.copy()
+    with_nan.loc[0] = np.nan
+
+    with pytest.raises(AssertionError):
+        eda.profile_shift(with_nan, valid)
+    with pytest.raises(AssertionError):
+        eda.profile_shift(valid, with_nan)
+
+
+def _toy_lagged_df() -> pd.DataFrame:
+    time_utc = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    x = pd.Series(np.random.default_rng(0).normal(size=48))
+    return pd.DataFrame({"time_utc": time_utc, "x": x, "y": x.shift(2)})
+
+
+def test_lagged_correlations_finds_delay():
+    df = _toy_lagged_df()
+
+    table = eda.lagged_correlations(df, "y", "x", range(-3, 4))
+
+    best = table.loc[table["rho"].idxmax()]
+    assert best["lag"] == 2
+    assert best["rho"] == pytest.approx(1.0)
+    assert best["n"] == 46
+
+
+def test_lagged_correlations_rows_mask_and_grid_check():
+    df = _toy_lagged_df()
+    rows = pd.Series(df.index < 24, index=df.index)
+
+    table = eda.lagged_correlations(df, "y", "x", [0], rows=rows)
+
+    # у y первые два часа NaN, поэтому из первых 24 строк остаются 22 пары
+    assert table.loc[0, "n"] == 22
+
+    with pytest.raises(AssertionError):
+        eda.lagged_correlations(df.drop(index=10), "y", "x", [0])
