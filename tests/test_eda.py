@@ -158,3 +158,46 @@ def test_profile_extremes_ignores_single_hour_spike():
 
     # ради этого сглаживаем: одиночный скачок не перебивает широкий пик в 14 ч
     assert extremes.loc["season", "peak_hour"] == 14
+
+
+def test_profile_shift_finds_one_hour_earlier_peak():
+    hours = np.arange(24)
+    reference = pd.Series(np.cos(2 * np.pi * (hours - 14) / 24), index=hours)
+    other = pd.Series(np.roll(reference.to_numpy(), -1), index=hours)
+
+    table = eda.profile_shift(reference, other)
+
+    assert len(table) == 13
+    best = table.loc[table["corr"].idxmax()]
+    assert best["shift"] == -1
+    assert best["corr"] == pytest.approx(1.0)
+
+
+def _toy_lagged_df() -> pd.DataFrame:
+    time_utc = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    x = pd.Series(np.random.default_rng(0).normal(size=48))
+    return pd.DataFrame({"time_utc": time_utc, "x": x, "y": x.shift(2)})
+
+
+def test_lagged_correlations_finds_delay():
+    df = _toy_lagged_df()
+
+    table = eda.lagged_correlations(df, "y", "x", range(-3, 4))
+
+    best = table.loc[table["rho"].idxmax()]
+    assert best["lag"] == 2
+    assert best["rho"] == pytest.approx(1.0)
+    assert best["n"] == 46
+
+
+def test_lagged_correlations_rows_mask_and_grid_check():
+    df = _toy_lagged_df()
+    rows = pd.Series(df.index < 24, index=df.index)
+
+    table = eda.lagged_correlations(df, "y", "x", [0], rows=rows)
+
+    # у y первые два часа NaN, поэтому из первых 24 строк остаются 22 пары
+    assert table.loc[0, "n"] == 22
+
+    with pytest.raises(AssertionError):
+        eda.lagged_correlations(df.drop(index=10), "y", "x", [0])

@@ -1,5 +1,7 @@
 """Таблицы для разведочного анализа и графиков (этап 4)."""
 
+from collections.abc import Iterable
+
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -122,3 +124,42 @@ def profile_extremes(table: pd.DataFrame, window: int = 3) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows, index=table.columns)
+
+
+def profile_shift(
+    reference: pd.Series, other: pd.Series, max_shift: int = 6
+) -> pd.DataFrame:
+    """Похожесть профилей при сдвиге по кругу; shift = +k — other запаздывает на k ч."""
+    assert len(reference) == len(other) == 24, "нужны два профиля по 24 часа"
+    ref_values = reference.to_numpy(dtype=float)
+    other_values = other.to_numpy(dtype=float)
+    shifts = list(range(-max_shift, max_shift + 1))
+    corrs = []
+    # положительный сдвиг переносит пик reference позже по часам
+    for shift in shifts:
+        corrs.append(float(np.corrcoef(other_values, np.roll(ref_values, shift))[0, 1]))
+    return pd.DataFrame({"shift": shifts, "corr": corrs})
+
+
+def lagged_correlations(
+    df: pd.DataFrame,
+    column: str,
+    other_column: str,
+    lags: Iterable[int],
+    rows: pd.Series | None = None,
+) -> pd.DataFrame:
+    """ρ Спирмена между column и other_column со сдвигом lag ч; +k — column запаздывает на k ч."""
+    steps = df["time_utc"].diff().dropna()
+    assert (steps == pd.Timedelta(hours=1)).all(), (
+        "нужна полная часовая сетка: сдвиг на строку = сдвиг на час"
+    )
+    if rows is None:
+        rows = pd.Series(True, index=df.index)
+    records = []
+    # сдвигаем на всей сетке и только потом отбираем строки,
+    # иначе на стыке сезонов соседними оказались бы часы с разрывом в полгода
+    for lag in lags:
+        pairs = pd.DataFrame({"x": df[column], "y": df[other_column].shift(lag)})[rows].dropna()
+        rho = pairs["x"].corr(pairs["y"], method="spearman")
+        records.append({"lag": lag, "rho": rho, "n": len(pairs)})
+    return pd.DataFrame(records)
