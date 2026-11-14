@@ -201,3 +201,74 @@ def test_save_and_read_clean_csv_round_trip(tmp_path):
         read.drop(columns="time_utc"), table.drop(columns="time_utc")
     )
     clean.check_clean_hourly(read, columns)
+
+
+def make_pm25_table():
+    """Таблица PM2.5: 8 часов от 2024-02-29 16:00 UTC, дыра из 4 часов в середине."""
+    pm25 = pd.Series([10.0, 11.0, None, None, None, None, 12.0, 13.0])
+    return pd.DataFrame(
+        {
+            "time_utc": pd.date_range("2024-02-29 16:00", periods=8, freq="h", tz="UTC"),
+            "pm25": pm25,
+            "pm25_missing": pm25.isna(),
+            "pm25_interpolated": [False, True, False, False, False, False, False, False],
+        }
+    )
+
+
+def test_count_out_of_range_counts_pm25():
+    table = pd.DataFrame({"pm25": [-1.0, 5.0, 1001.0]})
+
+    counts = clean.count_out_of_range(table, clean.VALID_RANGES)
+
+    assert counts["pm25"] == 2
+
+
+def test_to_hourly_grid_adds_missing_hour():
+    times = pd.to_datetime(["2024-01-01 00:00", "2024-01-01 01:00", "2024-01-01 03:00"], utc=True)
+    table = pd.DataFrame({"time_utc": times, "pm25": [1.0, 2.0, 4.0]})
+
+    grid = clean.to_hourly_grid(table)
+
+    expected_times = pd.date_range("2024-01-01 00:00", periods=4, freq="h", tz="UTC")
+    assert len(grid) == 4
+    assert grid["time_utc"].tolist() == expected_times.tolist()
+    assert str(grid["time_utc"].dt.tz) == "UTC"
+    assert pd.isna(grid.loc[2, "pm25"])
+    assert grid["pm25"].dropna().tolist() == [1.0, 2.0, 4.0]
+
+
+def test_to_hourly_grid_rejects_duplicate_hour():
+    times = pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:00"], utc=True)
+    table = pd.DataFrame({"time_utc": times, "pm25": [1.0, 2.0]})
+
+    with pytest.raises(AssertionError, match="повторяющиеся"):
+        clean.to_hourly_grid(table)
+
+
+def test_check_clean_hourly_allows_nan_in_listed_column():
+    table = make_weather_table()
+    columns = list(table.columns)
+    table.loc[1, "temp_c"] = float("nan")
+
+    clean.check_clean_hourly(table, columns, nan_columns=("temp_c",))
+
+
+def test_check_clean_pm25_accepts_good_table():
+    clean.check_clean_pm25(make_pm25_table())
+
+
+def test_check_clean_pm25_rejects_wrong_missing_flag():
+    table = make_pm25_table()
+    table.loc[2, "pm25_missing"] = False
+
+    with pytest.raises(AssertionError, match="pm25_missing"):
+        clean.check_clean_pm25(table)
+
+
+def test_check_clean_pm25_rejects_text_flag():
+    table = make_pm25_table()
+    table["pm25_interpolated"] = ["True", "False"] * 4
+
+    with pytest.raises(AssertionError):
+        clean.check_clean_pm25(table)
