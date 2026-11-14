@@ -2,10 +2,12 @@
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -166,3 +168,105 @@ def permutation_table(
         }
     )
     return table.sort_values("mae_increase", ascending=False).reset_index(drop=True)
+
+
+def time_cv_table(
+    table: pd.DataFrame,
+    feature_columns: list[str],
+    model,
+    n_splits: int = 5,
+    target: str = "pm25_mean",
+) -> pd.DataFrame:
+    """Оценивает модель и наивный прогноз на фолдах расширяющегося окна по времени."""
+    assert table["date"].is_monotonic_increasing, "даты должны возрастать по времени"
+    assert "pm25_lag1" in table.columns, "нужен столбец pm25_lag1 для наивного прогноза"
+    # TimeSeriesSplit делит train на k+1 кусков: валидация всегда позже обучения
+    splitter = TimeSeriesSplit(n_splits=n_splits)
+    rows = []
+    for fold, (train_idx, val_idx) in enumerate(splitter.split(table), start=1):
+        tr, val = table.iloc[train_idx], table.iloc[val_idx]
+        # clone создаёт свежую необученную копию на каждый фолд; так проверяем только на train
+        fitted = clone(model).fit(tr[feature_columns], tr[target])
+        pred = fitted.predict(val[feature_columns])
+        rows.append(
+            {
+                "fold": fold,
+                "train_end": tr["date"].max(),
+                "val_start": val["date"].min(),
+                "val_end": val["date"].max(),
+                "n_train": len(tr),
+                "n_val": len(val),
+                "mae_model": float(mean_absolute_error(val[target], pred)),
+                "mae_naive": float(mean_absolute_error(val[target], naive_forecast(val))),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def make_forest_grid(
+    n_estimators_list: list[int], max_depths: list[int], min_leafs: list[int]
+) -> list[dict[str, int]]:
+    """Собирает список комбинаций гиперпараметров для перебора Random Forest."""
+    assert n_estimators_list and max_depths and min_leafs, (
+        "списки параметров не должны быть пустыми"
+    )
+    grid = []
+    for n_est in n_estimators_list:
+        for depth in max_depths:
+            for leaf in min_leafs:
+                grid.append(
+                    {
+                        "n_estimators": int(n_est),
+                        "max_depth": int(depth),
+                        "min_samples_leaf": int(leaf),
+                    }
+                )
+    return grid
+
+
+def forest_grid_cv(
+    table: pd.DataFrame,
+    feature_columns: list[str],
+    grid: list[dict[str, int]],
+    n_splits: int = 5,
+    seed: int = 42,
+    target: str = "pm25_mean",
+) -> pd.DataFrame:
+    """Перебирает сетку Random Forest в скользящей проверке по времени на train."""
+    assert len(grid) > 0, "сетка параметров не должна быть пустой"
+    rows = []
+    for params in grid:
+        forest = make_forest(
+            int(params["n_estimators"]),
+            int(params["max_depth"]),
+            int(params["min_samples_leaf"]),
+            seed=seed,
+        )
+        cv = time_cv_table(table, feature_columns, forest, n_splits=n_splits, target=target)
+        rows.append(
+            {
+                "n_estimators": int(params["n_estimators"]),
+                "max_depth": int(params["max_depth"]),
+                "min_samples_leaf": int(params["min_samples_leaf"]),
+                "cv_mae_mean": float(cv["mae_model"].mean()),
+                "cv_mae_std": float(cv["mae_model"].std()),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("cv_mae_mean").reset_index(drop=True)
+
+
+def residuals_on_calendar(
+    calendar_dates: pd.Series | pd.DatetimeIndex,
+    dates: pd.Series | pd.DatetimeIndex,
+    residuals: pd.Series | np.ndarray,
+) -> pd.DataFrame:
+    """Накладывает остатки на полный календарь дат, чтобы дыры стали NaN."""
+    assert len(dates) == len(residuals), "число дат и остатков должно совпадать"
+    calendar = pd.DataFrame({"date": pd.to_datetime(calendar_dates)}).sort_values("date")
+    res_frame = pd.DataFrame(
+        {"date": pd.to_datetime(dates), "residual": np.asarray(residuals, dtype=float)}
+    )
+    # без полного календаря shift/автокорреляция соединили бы сутки через дыру как соседние
+    merged = calendar.merge(res_frame, on="date", how="left", validate="one_to_one")
+    assert len(merged) == len(calendar), "merge не должен менять число календарных суток"
+    return merged.reset_index(drop=True)
