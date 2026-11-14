@@ -29,6 +29,40 @@ RAW_COLUMNS = {
     "flagInfo.hasFlags": "has_flags",
 }
 
+# Open-Meteo: ключ не нужен; координаты станции из задачи 1.1
+LATITUDE = 43.252855
+LONGITUDE = 76.93118
+WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
+AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+# Даты в UTC накрывают период OpenAQ (обе даты включены)
+METEO_START_DATE = "2020-04-09"
+METEO_END_DATE = "2025-11-14"
+# Первая дата с данными CAMS: проба API 2026-11-14 (раньше значения пустые)
+CAMS_START_DATE = "2022-08-04"
+METEO_TIME_FORMAT = "%Y-%m-%dT%H:%M"
+# Переменная API -> единицы из ответа (проверяем до переименования)
+WEATHER_UNITS = {
+    "temperature_2m": "°C",
+    "relative_humidity_2m": "%",
+    "precipitation": "mm",
+    "pressure_msl": "hPa",
+    "wind_speed_10m": "m/s",
+    "wind_direction_10m": "°",
+}
+# Имена колонок сырого файла: переменная API -> имя проекта (значения не меняем)
+WEATHER_COLUMNS = {
+    "time": "time_utc",
+    "temperature_2m": "temp_c",
+    "relative_humidity_2m": "humidity",
+    "precipitation": "precip",
+    "pressure_msl": "pressure",
+    "wind_speed_10m": "wind_speed",
+    "wind_direction_10m": "wind_dir",
+}
+# Open-Meteo отдаёт «μ» (греческая мю, U+03BC), а у OpenAQ «µ» (U+00B5)
+CAMS_UNITS = {"pm2_5": "μg/m³"}
+CAMS_COLUMNS = {"time": "time_utc", "pm2_5": "cams_pm25"}
+
 
 def get_api_key() -> str:
     """Читает ключ OpenAQ из .env; если его нет — понятная ошибка."""
@@ -207,6 +241,35 @@ def download_pm25(
     df = measurements_to_dataframe(results)
     check_pm25_export(df, datetime_from, datetime_to)
     return df
+
+
+def hourly_to_dataframe(data: dict, units: dict, columns: dict) -> pd.DataFrame:
+    """Проверяет ответ Open-Meteo (UTC, ячейка рядом, единицы) и делает таблицу."""
+    assert data["utc_offset_seconds"] == 0, "время в ответе не UTC"
+    assert abs(data["latitude"] - LATITUDE) <= 0.5, "ячейка сетки далеко от станции"
+    assert abs(data["longitude"] - LONGITUDE) <= 0.5, "ячейка сетки далеко от станции"
+    for variable, unit in units.items():
+        assert data["hourly_units"][variable] == unit, f"единицы {variable} не {unit}"
+    # Блок hourly — словарь колонок, поэтому сразу DataFrame
+    df = pd.DataFrame(data["hourly"])
+    return df[list(columns)].rename(columns=columns)
+
+
+def check_hourly_export(df: pd.DataFrame, start_date: str, end_date: str) -> None:
+    """Проверяет выгрузку Open-Meteo: время, полная сетка часов без дублей, числа."""
+    assert len(df) > 0, "таблица пустая"
+    assert df.columns[0] == "time_utc", "первая колонка должна быть time_utc"
+    times = pd.to_datetime(df["time_utc"], utc=True, format=METEO_TIME_FORMAT, errors="coerce")
+    assert times.isna().sum() == 0, "есть даты, которые не удалось разобрать"
+    start = pd.Timestamp(start_date, tz="UTC")
+    end = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(hours=23)
+    assert times.iloc[0] == start, "первая метка не совпадает с началом периода"
+    assert times.iloc[-1] == end, "последняя метка не совпадает с концом периода"
+    assert times.duplicated().sum() == 0, "есть повторяющиеся метки"
+    # Полная сетка: пропуск у Open-Meteo — пустое значение, а не пропавшая строка
+    assert len(df) == (end - start) / pd.Timedelta(hours=1) + 1, "число строк не равно числу часов"
+    for column in df.columns[1:]:
+        assert pd.api.types.is_numeric_dtype(df[column]), f"{column} не число"
 
 
 def save_raw_csv(df: pd.DataFrame, path: str) -> None:
