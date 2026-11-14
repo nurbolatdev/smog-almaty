@@ -160,7 +160,7 @@ def test_check_hourly_rejects_missing_weather():
     hourly = features.make_hourly(features.merge_sources(pm25, weather, cams))
     hourly.loc[1, "temp_c"] = float("nan")
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="temp_c"):
         features.check_hourly(hourly)
 
 
@@ -278,7 +278,7 @@ def test_check_daily_rejects_false_instead_of_unknown():
     daily = features.make_daily(hourly)
     daily["who_exceed"] = daily["who_exceed"].fillna(False)
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="who_exceed"):
         features.check_daily(daily)
 
 
