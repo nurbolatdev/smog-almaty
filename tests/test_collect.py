@@ -43,6 +43,13 @@ def test_get_json_returns_payload(monkeypatch):
     assert get_calls[0]["headers"] == {"X-API-Key": "key123"}
 
 
+def test_get_json_without_key_sends_no_key_header(monkeypatch):
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, {"a": 1})])
+    result = collect.get_json("http://x")
+    assert result == {"a": 1}
+    assert get_calls[0]["headers"] == {}
+
+
 def test_get_json_retries_after_429(monkeypatch):
     responses = [FakeResponse(429), FakeResponse(200, {"ok": True})]
     get_calls, sleep_calls = patch_network(monkeypatch, responses)

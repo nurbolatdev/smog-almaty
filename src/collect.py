@@ -1,4 +1,4 @@
-"""Сбор данных из API OpenAQ v3: метаданные станции, выгрузка почасовых измерений PM2.5."""
+"""Сбор данных из API OpenAQ v3 и Open-Meteo: метаданные станции, PM2.5, погода и CAMS."""
 
 import os
 import time
@@ -41,16 +41,18 @@ def get_api_key() -> str:
 
 def get_json(
     url: str,
-    api_key: str,
+    api_key: str | None = None,
     params: dict | None = None,
     max_retries: int = 3,
     wait_seconds: int = 60,
 ) -> dict:
-    """Делает GET-запрос к OpenAQ; при коде 429 ждёт и повторяет."""
+    """GET-запрос к API (OpenAQ — с ключом, Open-Meteo — без); при 429 ждёт и повторяет."""
+    headers = {}
+    if api_key is not None:
+        # Ключ нужен только OpenAQ; Open-Meteo работает без ключа
+        headers["X-API-Key"] = api_key
     for _attempt in range(max_retries):
-        response = requests.get(
-            url, headers={"X-API-Key": api_key}, params=params, timeout=30
-        )
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         if response.status_code == 429:
             # Слишком много запросов: ждём, пока сбросится минутное окно
             time.sleep(wait_seconds)
