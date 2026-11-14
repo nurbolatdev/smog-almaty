@@ -1,4 +1,4 @@
-"""Сбор данных из API OpenAQ v3: метаданные станции, выгрузка почасовых измерений PM2.5."""
+"""Сбор данных из API OpenAQ v3 и Open-Meteo: метаданные станции, PM2.5, погода и CAMS."""
 
 import os
 import time
@@ -29,6 +29,40 @@ RAW_COLUMNS = {
     "flagInfo.hasFlags": "has_flags",
 }
 
+# Open-Meteo: ключ не нужен; координаты станции из задачи 1.1
+LATITUDE = 43.252855
+LONGITUDE = 76.93118
+WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
+AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+# Даты в UTC накрывают период OpenAQ (обе даты включены)
+METEO_START_DATE = "2020-04-09"
+METEO_END_DATE = "2025-11-14"
+# Первая дата с данными CAMS: проба API 2026-11-14 (раньше значения пустые)
+CAMS_START_DATE = "2022-08-04"
+METEO_TIME_FORMAT = "%Y-%m-%dT%H:%M"
+# Переменная API -> единицы из ответа (проверяем до переименования)
+WEATHER_UNITS = {
+    "temperature_2m": "°C",
+    "relative_humidity_2m": "%",
+    "precipitation": "mm",
+    "pressure_msl": "hPa",
+    "wind_speed_10m": "m/s",
+    "wind_direction_10m": "°",
+}
+# Имена колонок сырого файла: переменная API -> имя проекта (значения не меняем)
+WEATHER_COLUMNS = {
+    "time": "time_utc",
+    "temperature_2m": "temp_c",
+    "relative_humidity_2m": "humidity",
+    "precipitation": "precip",
+    "pressure_msl": "pressure",
+    "wind_speed_10m": "wind_speed",
+    "wind_direction_10m": "wind_dir",
+}
+# Open-Meteo отдаёт «μ» (греческая мю, U+03BC), а у OpenAQ «µ» (U+00B5)
+CAMS_UNITS = {"pm2_5": "μg/m³"}
+CAMS_COLUMNS = {"time": "time_utc", "pm2_5": "cams_pm25"}
+
 
 def get_api_key() -> str:
     """Читает ключ OpenAQ из .env; если его нет — понятная ошибка."""
@@ -41,16 +75,18 @@ def get_api_key() -> str:
 
 def get_json(
     url: str,
-    api_key: str,
+    api_key: str | None = None,
     params: dict | None = None,
     max_retries: int = 3,
     wait_seconds: int = 60,
 ) -> dict:
-    """Делает GET-запрос к OpenAQ; при коде 429 ждёт и повторяет."""
+    """GET-запрос к API (OpenAQ — с ключом, Open-Meteo — без); при 429 ждёт и повторяет."""
+    headers = {}
+    if api_key is not None:
+        # Ключ нужен только OpenAQ; Open-Meteo работает без ключа
+        headers["X-API-Key"] = api_key
     for _attempt in range(max_retries):
-        response = requests.get(
-            url, headers={"X-API-Key": api_key}, params=params, timeout=30
-        )
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         if response.status_code == 429:
             # Слишком много запросов: ждём, пока сбросится минутное окно
             time.sleep(wait_seconds)
@@ -204,6 +240,73 @@ def download_pm25(
     results = fetch_period_measurements(sensor_id, datetime_from, datetime_to, api_key)
     df = measurements_to_dataframe(results)
     check_pm25_export(df, datetime_from, datetime_to)
+    return df
+
+
+def hourly_to_dataframe(data: dict, units: dict, columns: dict) -> pd.DataFrame:
+    """Проверяет ответ Open-Meteo (UTC, ячейка рядом, единицы) и делает таблицу."""
+    assert data["utc_offset_seconds"] == 0, "время в ответе не UTC"
+    assert abs(data["latitude"] - LATITUDE) <= 0.5, "ячейка сетки далеко от станции"
+    assert abs(data["longitude"] - LONGITUDE) <= 0.5, "ячейка сетки далеко от станции"
+    for variable, unit in units.items():
+        assert data["hourly_units"][variable] == unit, f"единицы {variable} не {unit}"
+    # Блок hourly — словарь колонок, поэтому сразу DataFrame
+    df = pd.DataFrame(data["hourly"])
+    return df[list(columns)].rename(columns=columns)
+
+
+def check_hourly_export(df: pd.DataFrame, start_date: str, end_date: str) -> None:
+    """Проверяет выгрузку Open-Meteo: время, полная сетка часов без дублей, числа."""
+    assert len(df) > 0, "таблица пустая"
+    assert df.columns[0] == "time_utc", "первая колонка должна быть time_utc"
+    times = pd.to_datetime(df["time_utc"], utc=True, format=METEO_TIME_FORMAT, errors="coerce")
+    assert times.isna().sum() == 0, "есть даты, которые не удалось разобрать"
+    start = pd.Timestamp(start_date, tz="UTC")
+    end = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(hours=23)
+    assert times.iloc[0] == start, "первая метка не совпадает с началом периода"
+    assert times.iloc[-1] == end, "последняя метка не совпадает с концом периода"
+    assert times.duplicated().sum() == 0, "есть повторяющиеся метки"
+    # Полная сетка: пропуск у Open-Meteo — пустое значение, а не пропавшая строка
+    assert len(df) == (end - start) / pd.Timedelta(hours=1) + 1, "число строк не равно числу часов"
+    for column in df.columns[1:]:
+        assert pd.api.types.is_numeric_dtype(df[column]), f"{column} не число"
+
+
+def download_weather(
+    start_date: str = METEO_START_DATE, end_date: str = METEO_END_DATE
+) -> pd.DataFrame:
+    """Выгружает почасовую погоду Open-Meteo одним запросом, на диск не пишет."""
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(WEATHER_UNITS),  # имена переменных через запятую
+        "timezone": "UTC",
+        "wind_speed_unit": "ms",
+    }
+    data = get_json(WEATHER_URL, params=params)
+    df = hourly_to_dataframe(data, WEATHER_UNITS, WEATHER_COLUMNS)
+    check_hourly_export(df, start_date, end_date)
+    return df
+
+
+def download_cams(
+    start_date: str = CAMS_START_DATE, end_date: str = METEO_END_DATE
+) -> pd.DataFrame:
+    """Выгружает почасовой модельный PM2.5 (CAMS) одним запросом, на диск не пишет."""
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(CAMS_UNITS),
+        "domains": "cams_global",
+        "timezone": "UTC",
+    }
+    data = get_json(AIR_QUALITY_URL, params=params)
+    df = hourly_to_dataframe(data, CAMS_UNITS, CAMS_COLUMNS)
+    check_hourly_export(df, start_date, end_date)
     return df
 
 

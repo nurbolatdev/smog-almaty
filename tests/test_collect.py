@@ -43,6 +43,13 @@ def test_get_json_returns_payload(monkeypatch):
     assert get_calls[0]["headers"] == {"X-API-Key": "key123"}
 
 
+def test_get_json_without_key_sends_no_key_header(monkeypatch):
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, {"a": 1})])
+    result = collect.get_json("http://x")
+    assert result == {"a": 1}
+    assert get_calls[0]["headers"] == {}
+
+
 def test_get_json_retries_after_429(monkeypatch):
     responses = [FakeResponse(429), FakeResponse(200, {"ok": True})]
     get_calls, sleep_calls = patch_network(monkeypatch, responses)
@@ -354,6 +361,145 @@ def test_download_pm25_combines_steps(monkeypatch):
     df = collect.download_pm25(25903, "2024-01-01T00:00:00Z", "2024-01-01T02:00:00Z")
     assert df.shape == (2, 4)
     assert list(df.columns) == ["datetime_from_utc", "datetime_to_utc", "pm25", "has_flags"]
+
+
+def make_day_times(day="2024-01-01"):
+    """24 часовые метки одного дня в формате Open-Meteo."""
+    times = pd.date_range(day, periods=24, freq="h")
+    return times.strftime(collect.METEO_TIME_FORMAT).tolist()
+
+
+def make_meteo_response(
+    hourly, hourly_units, utc_offset_seconds=0, latitude=43.25, longitude=76.93
+):
+    """Ответ Open-Meteo в форме реального."""
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "utc_offset_seconds": utc_offset_seconds,
+        "hourly_units": hourly_units,
+        "hourly": hourly,
+    }
+
+
+def make_weather_response(**kwargs):
+    """Ответ с погодой за один день: 6 переменных, верные единицы."""
+    hourly = {"time": make_day_times()}
+    for variable in collect.WEATHER_UNITS:
+        hourly[variable] = [1.0] * 24
+    units = dict(collect.WEATHER_UNITS)
+    units.update(kwargs.pop("units", {}))
+    return make_meteo_response(hourly, units, **kwargs)
+
+
+def make_cams_response(values, **kwargs):
+    """Ответ CAMS: время и pm2_5."""
+    hourly = {"time": make_day_times()[: len(values)], "pm2_5": values}
+    return make_meteo_response(hourly, dict(collect.CAMS_UNITS), **kwargs)
+
+
+def make_hourly_table(times):
+    """Таблица для check_hourly_export: метки и одна числовая колонка."""
+    return pd.DataFrame({"time_utc": times, "cams_pm25": [1.0] * len(times)})
+
+
+def test_hourly_to_dataframe_renames_and_keeps_values():
+    values = [10.5, None, 12.0]
+    data = make_cams_response(values)
+    df = collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
+    assert list(df.columns) == ["time_utc", "cams_pm25"]
+    assert df["cams_pm25"].iloc[0] == 10.5
+    assert pd.isna(df["cams_pm25"].iloc[1])
+    assert df["cams_pm25"].iloc[2] == 12.0
+
+
+def test_hourly_to_dataframe_rejects_wrong_units():
+    data = make_weather_response(units={"wind_speed_10m": "km/h"})
+    with pytest.raises(AssertionError):
+        collect.hourly_to_dataframe(data, collect.WEATHER_UNITS, collect.WEATHER_COLUMNS)
+
+
+def test_hourly_to_dataframe_rejects_local_time():
+    data = make_cams_response([1.0], utc_offset_seconds=18000)
+    with pytest.raises(AssertionError):
+        collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
+
+
+def test_hourly_to_dataframe_rejects_far_coordinates():
+    data = make_cams_response([1.0], latitude=45.0)
+    with pytest.raises(AssertionError):
+        collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
+
+
+def test_hourly_to_dataframe_rejects_far_longitude():
+    data = make_cams_response([1.0], longitude=79.0)
+    with pytest.raises(AssertionError):
+        collect.hourly_to_dataframe(data, collect.CAMS_UNITS, collect.CAMS_COLUMNS)
+
+
+def test_check_hourly_export_accepts_full_day():
+    df = make_hourly_table(make_day_times())
+    collect.check_hourly_export(df, "2024-01-01", "2024-01-01")
+
+
+def test_check_hourly_export_rejects_bad_time():
+    times = make_day_times()
+    times[5] = "not a date"
+    with pytest.raises(AssertionError):
+        collect.check_hourly_export(make_hourly_table(times), "2024-01-01", "2024-01-01")
+
+
+def test_check_hourly_export_rejects_missing_hour():
+    times = make_day_times()
+    del times[5]
+    with pytest.raises(AssertionError):
+        collect.check_hourly_export(make_hourly_table(times), "2024-01-01", "2024-01-01")
+
+
+def test_check_hourly_export_rejects_duplicate_hour():
+    times = make_day_times()
+    times[5] = times[4]
+    with pytest.raises(AssertionError):
+        collect.check_hourly_export(make_hourly_table(times), "2024-01-01", "2024-01-01")
+
+
+def fail_if_key_requested():
+    """Подмена get_api_key: ключ Open-Meteo не нужен, вызов — ошибка."""
+    raise AssertionError("ключ OpenAQ не должен запрашиваться")
+
+
+def test_download_weather_sends_coordinates_and_units(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", fail_if_key_requested)
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, make_weather_response())])
+    df = collect.download_weather("2024-01-01", "2024-01-01")
+    call = get_calls[0]
+    assert call["url"] == collect.WEATHER_URL
+    assert call["headers"] == {}
+    assert call["params"]["latitude"] == collect.LATITUDE
+    assert call["params"]["longitude"] == collect.LONGITUDE
+    assert call["params"]["timezone"] == "UTC"
+    assert call["params"]["wind_speed_unit"] == "ms"
+    for variable in collect.WEATHER_UNITS:
+        assert variable in call["params"]["hourly"]
+    assert df.shape == (24, 7)
+    assert list(df.columns) == list(collect.WEATHER_COLUMNS.values())
+
+
+def test_download_cams_sends_domain_and_pm25(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", fail_if_key_requested)
+    response = make_cams_response([5.0] * 24)
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, response)])
+    df = collect.download_cams("2024-01-01", "2024-01-01")
+    call = get_calls[0]
+    assert call["url"] == collect.AIR_QUALITY_URL
+    assert call["headers"] == {}
+    assert call["params"]["hourly"] == "pm2_5"
+    assert call["params"]["domains"] == "cams_global"
+    assert call["params"]["latitude"] == collect.LATITUDE
+    assert call["params"]["longitude"] == collect.LONGITUDE
+    assert call["params"]["timezone"] == "UTC"
+    assert df.shape == (24, 2)
+    assert list(df.columns) == ["time_utc", "cams_pm25"]
 
 
 def test_save_raw_csv_writes_file(tmp_path):
