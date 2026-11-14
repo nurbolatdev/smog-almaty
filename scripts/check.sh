@@ -31,7 +31,8 @@ fi
 if git rev-parse --git-dir >/dev/null 2>&1; then
   run_step "no-secrets" bash -c '! git ls-files --cached | grep -E "(^|/)\.env$"'
   if [ -x .git/hooks/forbidden-scan ]; then
-    run_step "content" bash -c 'git ls-files -z | xargs -0 cat 2>/dev/null | .git/hooks/forbidden-scan >/dev/null'
+    # Text files only: -I skips binaries such as figures/*.png (random bytes give false matches)
+    run_step "content" bash -c 'git grep -I -h -e "" | .git/hooks/forbidden-scan >/dev/null'
   fi
 fi
 
