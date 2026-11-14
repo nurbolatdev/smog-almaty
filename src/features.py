@@ -150,3 +150,29 @@ def check_hourly(df: pd.DataFrame) -> None:
     assert (cams_empty == (df["time_utc"] < first_cams)).all(), (
         "CAMS пустой не только до начала источника"
     )
+
+
+def local_dates(times_utc: pd.Series) -> pd.Series:
+    """Местная дата Алматы (без пояса) для каждого часа UTC."""
+    local = clean.to_almaty_time(times_utc)
+    # tz_localize(None) оставляет время, как на часах в Алматы; normalize — полночь этого дня
+    return local.dt.tz_localize(None).dt.normalize().rename("date")
+
+
+def aggregate_daily(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Местные сутки: только полные; PM2.5 — среднее, если есть ≥ 18 часов."""
+    daily = hourly.groupby(local_dates(hourly["time_utc"])).agg(
+        hours=("time_utc", "size"),
+        pm25_hours=("pm25", "count"),
+        pm25_mean=("pm25", "mean"),
+        temp_c=("temp_c", "mean"),
+        humidity=("humidity", "mean"),
+        pressure=("pressure", "mean"),
+        wind_speed=("wind_speed", "mean"),
+        precip=("precip", "sum"),
+    )
+    daily = daily.reset_index()
+    # края периода станции неполные; 29.02.2024 по Алматы — 25 часов
+    daily = daily[daily["hours"] >= 24].reset_index(drop=True)
+    daily["pm25_mean"] = daily["pm25_mean"].where(daily["pm25_hours"] >= MIN_HOURS_PER_DAY)
+    return daily

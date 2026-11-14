@@ -162,3 +162,69 @@ def test_check_hourly_rejects_missing_weather():
 
     with pytest.raises(AssertionError):
         features.check_hourly(hourly)
+
+
+def make_hourly_table(start_utc: str, hours: int) -> pd.DataFrame:
+    """Часовая таблица с простыми числами для проверки суточной агрегации."""
+    times = pd.date_range(start_utc, periods=hours, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "time_utc": times,
+            "pm25": [float(i) for i in range(hours)],
+            "temp_c": [10.0] * hours,
+            "humidity": [50] * hours,
+            "pressure": [1000.0] * hours,
+            "wind_speed": [2.0] * hours,
+            "precip": [0.5] * hours,
+        }
+    )
+
+
+def test_local_dates_across_march_2024_change():
+    times = pd.Series(
+        pd.to_datetime(["2024-02-29 17:00", "2024-02-29 18:00", "2024-02-29 19:00"], utc=True)
+    )
+
+    dates = features.local_dates(times)
+
+    expected = pd.to_datetime(["2024-02-29", "2024-02-29", "2024-03-01"])
+    assert dates.tolist() == expected.tolist()
+    assert dates.dt.tz is None
+
+
+def test_aggregate_daily_keeps_25_hour_day_and_drops_partial_days():
+    # 1 час 28.02, 25 часов 29.02, 1 час 01.03 по Алматы
+    hourly = make_hourly_table("2024-02-28 17:00", 27)
+
+    daily = features.aggregate_daily(hourly)
+
+    assert len(daily) == 1
+    assert daily["date"].iloc[0] == pd.Timestamp("2024-02-29")
+    assert daily["hours"].iloc[0] == 25
+
+
+def test_aggregate_daily_needs_18_hours_of_pm25():
+    # полные сутки 2024-01-10 по Алматы: 24 часа с 2024-01-09 18:00 UTC
+    hourly = make_hourly_table("2024-01-09 18:00", 24)
+    hourly.loc[17:, "pm25"] = float("nan")
+
+    short = features.aggregate_daily(hourly)
+
+    assert pd.isna(short["pm25_mean"].iloc[0])
+    assert short["pm25_hours"].iloc[0] == 17
+
+    hourly.loc[17, "pm25"] = 17.0
+    enough = features.aggregate_daily(hourly)
+
+    assert enough["pm25_hours"].iloc[0] == 18
+    assert enough["pm25_mean"].iloc[0] == pytest.approx(8.5)
+
+
+def test_aggregate_daily_sums_precip_and_averages_weather():
+    hourly = make_hourly_table("2024-01-09 18:00", 24)
+    hourly["temp_c"] = [float(i) for i in range(24)]
+
+    daily = features.aggregate_daily(hourly)
+
+    assert daily["precip"].iloc[0] == pytest.approx(12.0)
+    assert daily["temp_c"].iloc[0] == pytest.approx(11.5)
