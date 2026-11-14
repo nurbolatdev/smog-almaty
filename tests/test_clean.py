@@ -88,8 +88,9 @@ def test_check_columns_accepts_expected():
 def test_check_columns_rejects_other_order():
     table = make_weather_table()
     expected = list(table.columns)
-    shuffled = table[["time_utc", "humidity", "temp_c", "precip", "pressure", "wind_speed",
-                      "wind_dir"]]
+    shuffled = table[
+        ["time_utc", "humidity", "temp_c", "precip", "pressure", "wind_speed", "wind_dir"]
+    ]
 
     with pytest.raises(AssertionError):
         clean.check_columns(shuffled, expected)
@@ -197,9 +198,7 @@ def test_save_and_read_clean_csv_round_trip(tmp_path):
     assert lines[1].startswith("2024-02-29T16:00:00+0000")
     assert read["time_utc"].tolist() == table["time_utc"].tolist()
     assert str(read["time_utc"].dt.tz) == "UTC"
-    pd.testing.assert_frame_equal(
-        read.drop(columns="time_utc"), table.drop(columns="time_utc")
-    )
+    pd.testing.assert_frame_equal(read.drop(columns="time_utc"), table.drop(columns="time_utc"))
     clean.check_clean_hourly(read, columns)
 
 
