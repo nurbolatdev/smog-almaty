@@ -272,3 +272,68 @@ def test_check_clean_pm25_rejects_text_flag():
 
     with pytest.raises(AssertionError):
         clean.check_clean_pm25(table)
+
+
+def test_gap_lengths_marks_each_missing_hour():
+    values = pd.Series([1, None, 2, None, None, 3])
+
+    assert clean.gap_lengths(values).tolist() == [0, 1, 0, 2, 2, 0]
+
+
+def test_gap_sizes_lists_each_gap_once():
+    values = pd.Series([1, None, 2, None, None, 3])
+
+    assert clean.gap_sizes(values).tolist() == [1, 2]
+
+
+def test_interpolate_short_gaps_fills_only_whole_short_gaps():
+    nan = float("nan")
+    values = pd.Series([1, nan, nan, nan, 5, nan, nan, nan, nan, 10], dtype=float)
+    expected = pd.Series([1, 2, 3, 4, 5, nan, nan, nan, nan, 10], dtype=float)
+
+    result = clean.interpolate_short_gaps(values)
+
+    pd.testing.assert_series_equal(result, expected)
+    # ловушка: limit=3 заполнил бы 3 из 4 часов длинной дыры
+    assert values.interpolate(limit=3).isna().sum() == 1
+
+
+def test_interpolate_short_gaps_keeps_edges():
+    nan = float("nan")
+    values = pd.Series([nan, 1, 2, nan], dtype=float)
+
+    result = clean.interpolate_short_gaps(values)
+
+    assert result.isna().tolist() == [True, False, False, True]
+
+
+def test_interpolate_short_gaps_does_not_change_input():
+    nan = float("nan")
+    values = pd.Series([1, nan, 3], dtype=float)
+
+    clean.interpolate_short_gaps(values)
+
+    assert values.isna().tolist() == [False, True, False]
+
+
+def test_stuck_value_mask_flags_long_run():
+    long_run = pd.Series([5] * 6 + [7, 7])
+    short_run = pd.Series([5] * 5 + [7])
+
+    assert clean.stuck_value_mask(long_run).tolist() == [True] * 6 + [False, False]
+    assert not clean.stuck_value_mask(short_run).any()
+
+
+def test_stuck_value_mask_run_breaks_on_missing_hour():
+    values = pd.Series([3, 3, 3, None, 3, 3, 3])
+
+    assert not clean.stuck_value_mask(values).any()
+
+
+def test_check_clean_pm25_rejects_short_gap_left():
+    table = make_pm25_table()
+    table.loc[7, "pm25"] = None
+    table.loc[7, "pm25_missing"] = True
+
+    with pytest.raises(AssertionError, match="3 ч"):
+        clean.check_clean_pm25(table)
