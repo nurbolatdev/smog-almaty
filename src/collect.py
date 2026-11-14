@@ -272,6 +272,44 @@ def check_hourly_export(df: pd.DataFrame, start_date: str, end_date: str) -> Non
         assert pd.api.types.is_numeric_dtype(df[column]), f"{column} не число"
 
 
+def download_weather(
+    start_date: str = METEO_START_DATE, end_date: str = METEO_END_DATE
+) -> pd.DataFrame:
+    """Выгружает почасовую погоду Open-Meteo одним запросом, на диск не пишет."""
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(WEATHER_UNITS),  # имена переменных через запятую
+        "timezone": "UTC",
+        "wind_speed_unit": "ms",
+    }
+    data = get_json(WEATHER_URL, params=params)
+    df = hourly_to_dataframe(data, WEATHER_UNITS, WEATHER_COLUMNS)
+    check_hourly_export(df, start_date, end_date)
+    return df
+
+
+def download_cams(
+    start_date: str = CAMS_START_DATE, end_date: str = METEO_END_DATE
+) -> pd.DataFrame:
+    """Выгружает почасовой модельный PM2.5 (CAMS) одним запросом, на диск не пишет."""
+    params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(CAMS_UNITS),
+        "domains": "cams_global",
+        "timezone": "UTC",
+    }
+    data = get_json(AIR_QUALITY_URL, params=params)
+    df = hourly_to_dataframe(data, CAMS_UNITS, CAMS_COLUMNS)
+    check_hourly_export(df, start_date, end_date)
+    return df
+
+
 def save_raw_csv(df: pd.DataFrame, path: str) -> None:
     """Сохраняет сырую таблицу в CSV; существующий файл не перезаписывает."""
     if os.path.exists(path):

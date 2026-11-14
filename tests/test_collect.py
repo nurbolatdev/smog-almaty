@@ -457,6 +457,42 @@ def test_check_hourly_export_rejects_duplicate_hour():
         collect.check_hourly_export(make_hourly_table(times), "2024-01-01", "2024-01-01")
 
 
+def fail_if_key_requested():
+    """Подмена get_api_key: ключ Open-Meteo не нужен, вызов — ошибка."""
+    raise AssertionError("ключ OpenAQ не должен запрашиваться")
+
+
+def test_download_weather_sends_coordinates_and_units(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", fail_if_key_requested)
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, make_weather_response())])
+    df = collect.download_weather("2024-01-01", "2024-01-01")
+    call = get_calls[0]
+    assert call["url"] == collect.WEATHER_URL
+    assert call["headers"] == {}
+    assert call["params"]["latitude"] == collect.LATITUDE
+    assert call["params"]["longitude"] == collect.LONGITUDE
+    assert call["params"]["timezone"] == "UTC"
+    assert call["params"]["wind_speed_unit"] == "ms"
+    for variable in collect.WEATHER_UNITS:
+        assert variable in call["params"]["hourly"]
+    assert df.shape == (24, 7)
+    assert list(df.columns) == list(collect.WEATHER_COLUMNS.values())
+
+
+def test_download_cams_sends_domain_and_pm25(monkeypatch):
+    monkeypatch.setattr(collect, "get_api_key", fail_if_key_requested)
+    response = make_cams_response([5.0] * 24)
+    get_calls, _ = patch_network(monkeypatch, [FakeResponse(200, response)])
+    df = collect.download_cams("2024-01-01", "2024-01-01")
+    call = get_calls[0]
+    assert call["url"] == collect.AIR_QUALITY_URL
+    assert call["headers"] == {}
+    assert call["params"]["hourly"] == "pm2_5"
+    assert call["params"]["domains"] == "cams_global"
+    assert df.shape == (24, 2)
+    assert list(df.columns) == ["time_utc", "cams_pm25"]
+
+
 def test_save_raw_csv_writes_file(tmp_path):
     df = make_table(["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"], [10.0, 12.5])
     path = str(tmp_path / "raw.csv")
