@@ -62,3 +62,72 @@ def test_to_almaty_time_rejects_naive_times():
 
     with pytest.raises(AssertionError):
         clean.to_almaty_time(times)
+
+
+def make_weather_table(n=3):
+    """Таблица погоды с допустимыми значениями: n часов подряд от 2024-02-29 16:00 UTC."""
+    return pd.DataFrame(
+        {
+            "time_utc": pd.date_range("2024-02-29 16:00", periods=n, freq="h", tz="UTC"),
+            "temp_c": [5.0] * n,
+            "humidity": [50] * n,
+            "precip": [0.0] * n,
+            "pressure": [1015.0] * n,
+            "wind_speed": [2.0] * n,
+            "wind_dir": [180] * n,
+        }
+    )
+
+
+def test_check_columns_accepts_expected():
+    table = make_weather_table()
+
+    clean.check_columns(table, list(table.columns))
+
+
+def test_check_columns_rejects_other_order():
+    table = make_weather_table()
+    expected = list(table.columns)
+    shuffled = table[["time_utc", "humidity", "temp_c", "precip", "pressure", "wind_speed",
+                      "wind_dir"]]
+
+    with pytest.raises(AssertionError):
+        clean.check_columns(shuffled, expected)
+
+
+def test_count_out_of_range_counts_each_column():
+    table = make_weather_table()
+    table.loc[0, "humidity"] = 101
+    table.loc[1, "precip"] = -0.1
+
+    counts = clean.count_out_of_range(table, clean.VALID_RANGES)
+
+    assert counts["humidity"] == 1
+    assert counts["precip"] == 1
+    assert counts["temp_c"] == 0
+    assert "cams_pm25" not in counts
+
+
+def test_count_out_of_range_keeps_bounds_and_nan():
+    table = make_weather_table()
+    table["humidity"] = [0.0, 100.0, float("nan")]
+
+    counts = clean.count_out_of_range(table, clean.VALID_RANGES)
+
+    assert counts["humidity"] == 0
+
+
+def test_iqr_outlier_mask_flags_far_value():
+    values = pd.Series([10, 11, 12, 13, 100])
+
+    mask = clean.iqr_outlier_mask(values)
+
+    assert mask.tolist() == [False, False, False, False, True]
+
+
+def test_iqr_outlier_mask_flags_every_rain_hour_when_iqr_is_zero():
+    values = pd.Series([0.0] * 9 + [0.5])
+
+    mask = clean.iqr_outlier_mask(values)
+
+    assert mask.tolist() == [False] * 9 + [True]
