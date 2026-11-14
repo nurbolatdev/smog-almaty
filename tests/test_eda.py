@@ -145,6 +145,14 @@ def test_smooth_profile_wraps_around_midnight():
         eda.smooth_profile(profile.iloc[:23])
 
 
+def test_smooth_profile_rejects_nan():
+    profile = pd.Series(0.0, index=range(24))
+    profile.loc[5] = np.nan
+
+    with pytest.raises(AssertionError):
+        eda.smooth_profile(profile)
+
+
 def test_profile_extremes_ignores_single_hour_spike():
     hours = np.arange(24)
     values = np.cos(2 * np.pi * (hours - 14) / 24)
@@ -171,6 +179,18 @@ def test_profile_shift_finds_one_hour_earlier_peak():
     best = table.loc[table["corr"].idxmax()]
     assert best["shift"] == -1
     assert best["corr"] == pytest.approx(1.0)
+
+
+def test_profile_shift_rejects_nan():
+    hours = np.arange(24)
+    valid = pd.Series(np.cos(2 * np.pi * hours / 24), index=hours)
+    with_nan = valid.copy()
+    with_nan.loc[0] = np.nan
+
+    with pytest.raises(AssertionError):
+        eda.profile_shift(with_nan, valid)
+    with pytest.raises(AssertionError):
+        eda.profile_shift(valid, with_nan)
 
 
 def _toy_lagged_df() -> pd.DataFrame:

@@ -131,6 +131,7 @@ def profile_shift(
 ) -> pd.DataFrame:
     """Похожесть профилей при сдвиге по кругу; shift = +k — other запаздывает на k ч."""
     assert len(reference) == len(other) == 24, "нужны два профиля по 24 часа"
+    assert reference.notna().all() and other.notna().all(), "профили не должны содержать пропуски"
     ref_values = reference.to_numpy(dtype=float)
     other_values = other.to_numpy(dtype=float)
     shifts = list(range(-max_shift, max_shift + 1))
