@@ -71,3 +71,106 @@ def test_format_p():
     assert hypotheses.format_p(0.0004) == "< 0.001"
     assert hypotheses.format_p(0.0123) == "0.012"
     assert hypotheses.format_p(0.5) == "0.500"
+
+
+def test_spearman_with_ci_monotonic_and_drops_nan():
+    x = np.arange(1.0, 31.0)
+    y = x**3
+    y[-1] = np.nan
+    df = pd.DataFrame({"x": x, "y": y})
+
+    result = hypotheses.spearman_with_ci(df, "x", "y", n_boot=200, seed=42)
+
+    assert result["n"] == 29
+    assert result["rho"] == pytest.approx(1.0)
+    assert result["ci_low"] == pytest.approx(1.0)
+
+
+def test_chi2_table_expected_counts():
+    rows = [("a", True)] * 10 + [("a", False)] * 20
+    rows += [("b", True)] * 30 + [("b", False)] * 40
+    rows += [("c", True)] * 20 + [("c", False)] * 30
+    df = pd.DataFrame(rows, columns=["group", "flag"])
+
+    result = hypotheses.chi2_table(df, "group", "flag")
+
+    assert result["dof"] == 2
+    assert result["n"] == 150
+    expected = result["expected"]
+    # вручную: итог строки * итог колонки / n (True всего 60, False всего 90)
+    assert expected.loc["a", True] == pytest.approx(30 * 60 / 150)
+    assert expected.loc["b", False] == pytest.approx(70 * 90 / 150)
+    assert expected.loc["c", True] == pytest.approx(50 * 60 / 150)
+    assert result["min_expected"] == pytest.approx(expected.to_numpy().min())
+
+
+def test_chi2_table_effect_size_extremes():
+    equal_rows = (
+        [("a", True)] * 5
+        + [("a", False)] * 5
+        + [("b", True)] * 10
+        + [("b", False)] * 10
+        + [("c", True)] * 15
+        + [("c", False)] * 15
+    )
+    equal_res = hypotheses.chi2_table(pd.DataFrame(equal_rows, columns=["g", "f"]), "g", "f")
+    assert equal_res["chi2"] == pytest.approx(0.0)
+    assert equal_res["cramers_v"] == pytest.approx(0.0)
+    assert equal_res["p"] == pytest.approx(1.0)
+
+    split_rows = [("a", True)] * 10 + [("b", False)] * 10 + [("c", False)] * 10
+    split_res = hypotheses.chi2_table(pd.DataFrame(split_rows, columns=["g", "f"]), "g", "f")
+    assert split_res["cramers_v"] == pytest.approx(1.0)
+
+    with_na = pd.DataFrame(
+        {
+            "g": ["a", "a", "b", "b"],
+            "f": pd.array([True, pd.NA, False, True], dtype="boolean"),
+        }
+    )
+    with pytest.raises(AssertionError):
+        hypotheses.chi2_table(with_na, "g", "f")
+
+
+def test_autocorrelation_by_lag_alternating_series():
+    daily = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=20, freq="D"),
+            "pm25_mean": [1.0, 10.0] * 10,
+        }
+    )
+
+    res = hypotheses.autocorrelation_by_lag(daily, "pm25_mean", [1, 2])
+
+    lag1 = res[res["lag"] == 1].iloc[0]
+    lag2 = res[res["lag"] == 2].iloc[0]
+    assert lag1["rho"] == pytest.approx(-1.0)
+    assert lag1["n"] == 19
+    assert lag2["rho"] == pytest.approx(1.0)
+
+    first_ten = pd.Series([True] * 10 + [False] * 10, index=daily.index)
+    res_ten = hypotheses.autocorrelation_by_lag(daily, "pm25_mean", [1], rows=first_ten)
+    assert res_ten.iloc[0]["n"] == 9
+
+    with_gap = daily.drop(index=5).reset_index(drop=True)
+    with pytest.raises(AssertionError):
+        hypotheses.autocorrelation_by_lag(with_gap, "pm25_mean", [1])
+
+
+def test_thin_days_positions_and_checks():
+    daily = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=10, freq="D"),
+            "value": np.arange(10),
+        }
+    )
+
+    thinned = hypotheses.thin_days(daily, step=3, offset=1)
+    assert thinned["value"].tolist() == [1, 4, 7]
+
+    with pytest.raises(AssertionError):
+        hypotheses.thin_days(daily, step=3, offset=3)
+
+    with_gap = daily.drop(index=4).reset_index(drop=True)
+    with pytest.raises(AssertionError):
+        hypotheses.thin_days(with_gap, step=3, offset=0)
