@@ -228,3 +228,70 @@ def test_aggregate_daily_sums_precip_and_averages_weather():
 
     assert daily["precip"].iloc[0] == pytest.approx(12.0)
     assert daily["temp_c"].iloc[0] == pytest.approx(11.5)
+
+
+def test_who_exceed_flag_is_strict_and_unknown_without_data():
+    pm25_mean = pd.Series([10.0, 15.0, 15.1, float("nan")])
+
+    flags = features.who_exceed_flag(pm25_mean)
+
+    # nan > 15 дал бы False, а нужно <NA>
+    assert flags.isna().tolist() == [False, False, False, True]
+    assert flags.iloc[:3].tolist() == [False, False, True]
+    assert str(flags.dtype) == "boolean"
+
+
+def test_lag_previous_day_shifts_by_calendar_day():
+    values = pd.Series([10.0, float("nan"), 30.0])
+    dates = pd.Series(pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]))
+
+    lag = features.lag_previous_day(values, dates)
+
+    assert lag.isna().tolist() == [True, False, True]
+    assert lag.iloc[1] == 10.0
+
+
+def test_lag_previous_day_rejects_missing_date():
+    values = pd.Series([1.0, 2.0, 3.0])
+    dates = pd.Series(pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04"]))
+
+    with pytest.raises(AssertionError, match="подряд"):
+        features.lag_previous_day(values, dates)
+
+
+def test_make_daily_columns_and_lag():
+    # три полных местных суток: 2024-01-10 … 2024-01-12
+    hourly = make_hourly_table("2024-01-09 18:00", 72)
+
+    daily = features.make_daily(hourly)
+
+    assert daily.columns.tolist() == features.DAILY_COLUMNS
+    assert len(daily) == 3
+    assert daily["pm25_lag1"].iloc[1] == daily["pm25_mean"].iloc[0]
+    assert pd.isna(daily["pm25_lag1"].iloc[0])
+    features.check_daily(daily)
+
+
+def test_check_daily_rejects_false_instead_of_unknown():
+    hourly = make_hourly_table("2024-01-09 18:00", 48)
+    hourly.loc[:23, "pm25"] = float("nan")
+    daily = features.make_daily(hourly)
+    daily["who_exceed"] = daily["who_exceed"].fillna(False)
+
+    with pytest.raises(AssertionError):
+        features.check_daily(daily)
+
+
+def test_daily_csv_round_trip(tmp_path):
+    hourly = make_hourly_table("2024-01-09 18:00", 48)
+    hourly.loc[:23, "pm25"] = float("nan")
+    daily = features.make_daily(hourly)
+    path = tmp_path / "daily.csv"
+
+    features.save_daily_csv(daily, path)
+    after = features.read_daily_csv(path)
+
+    assert str(after["who_exceed"].dtype) == "boolean"
+    assert after["who_exceed"].isna().tolist() == [True, False]
+    assert after["date"].tolist() == daily["date"].tolist()
+    features.check_daily(after)

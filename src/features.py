@@ -176,3 +176,62 @@ def aggregate_daily(hourly: pd.DataFrame) -> pd.DataFrame:
     daily = daily[daily["hours"] >= 24].reset_index(drop=True)
     daily["pm25_mean"] = daily["pm25_mean"].where(daily["pm25_hours"] >= MIN_HOURS_PER_DAY)
     return daily
+
+
+def who_exceed_flag(pm25_mean: pd.Series) -> pd.Series:
+    """Превышена ли суточная норма ВОЗ; без среднего — неизвестно (<NA>), а не False."""
+    exceed = (pm25_mean > WHO_DAILY_LIMIT).astype("boolean")
+    return exceed.mask(pm25_mean.isna())
+
+
+def lag_previous_day(values: pd.Series, dates: pd.Series) -> pd.Series:
+    """Значение предыдущих календарных суток."""
+    steps = dates.diff().dropna()
+    assert (steps == pd.Timedelta(days=1)).all(), (
+        "даты не подряд: shift(1) взял бы не вчерашний день"
+    )
+    # пустые вчерашние сутки дают пустой лаг, ничего не заполняем
+    return values.shift(1)
+
+
+def make_daily(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Суточная таблица для H1, H2, нормы ВОЗ и модели."""
+    daily = aggregate_daily(hourly)
+    daily = add_calendar_features(daily, daily["date"])
+    # штиль по среднему за сутки ветру
+    daily["is_calm"] = calm_flag(daily["wind_speed"])
+    daily["who_exceed"] = who_exceed_flag(daily["pm25_mean"])
+    daily["pm25_lag1"] = lag_previous_day(daily["pm25_mean"], daily["date"])
+    return daily[DAILY_COLUMNS]
+
+
+def check_daily(df: pd.DataFrame) -> None:
+    """Контракт daily.csv."""
+    clean.check_columns(df, DAILY_COLUMNS)
+    assert pd.api.types.is_datetime64_dtype(df["date"]), "date не дата"
+    assert df["date"].dt.tz is None, "date должна быть без часового пояса"
+    assert df["date"].notna().all(), "в date есть NaT"
+    assert (df["date"].diff().dropna() == pd.Timedelta(days=1)).all(), "даты не подряд"
+    # среднее пустое ровно там, где часов со значением меньше порога
+    too_few = df["pm25_hours"] < MIN_HOURS_PER_DAY
+    assert (df["pm25_mean"].isna() == too_few).all(), "pm25_mean пустой не по правилу 18 часов"
+    assert str(df["who_exceed"].dtype) == "boolean", "who_exceed должен быть типа boolean"
+    assert (df["who_exceed"].isna() == df["pm25_mean"].isna()).all(), (
+        "who_exceed: <NA> должен быть там, где нет pm25_mean"
+    )
+    weather_columns = ["temp_c", "humidity", "precip", "pressure", "wind_speed"]
+    assert df[weather_columns].notna().all().all(), "в суточной погоде есть NaN"
+
+
+def save_daily_csv(df: pd.DataFrame, path) -> None:
+    """Сохраняет суточную таблицу с датой YYYY-MM-DD."""
+    df.to_csv(path, index=False, date_format=DAILY_DATE_FORMAT)
+
+
+def read_daily_csv(path) -> pd.DataFrame:
+    """Читает суточную таблицу: дата явным форматом, who_exceed как boolean."""
+    df = pd.read_csv(path, dtype={"who_exceed": "boolean"})
+    df["date"] = pd.to_datetime(df["date"], format=DAILY_DATE_FORMAT, errors="coerce")
+    bad_dates = df["date"].isna().sum()
+    assert bad_dates == 0, f"не разобрано дат: {bad_dates}"
+    return df
