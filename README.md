@@ -114,25 +114,46 @@ smog-almaty/
 
 ## 🚀 Быстрый старт
 
-**Требования:** Python 3.11+, Git.
+**Требования:** Python 3.11+ (проверено на 3.12.10), Git. Команды ниже — для macOS и Linux; в Windows вместо `.venv/bin/python` используйте `.venv\Scripts\python`.
+
+**Установка**
 
 ```bash
 git clone https://github.com/nurbolatdev/smog-almaty.git
 cd smog-almaty
-
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m ipykernel install --user --name smog-almaty
 ```
 
-**Ключ OpenAQ** нужен только для повторной выгрузки данных — готовые сырые данные лежат в `data/raw/`.
+Ядро `smog-almaty` привязывает Jupyter к окружению `.venv`: без него ноутбук может запуститься в системном Python, где нет библиотек проекта.
 
-1. Зарегистрируйтесь на [explore.openaq.org/register](https://explore.openaq.org/register) (бесплатно).
-2. `cp .env.example .env` и впишите ключ в `OPENAQ_API_KEY=`.
+Проверено на: Python 3.12.10, pandas 3.1.1, numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, matplotlib 3.11.2, seaborn 0.13.2, jupyter 1.1.1, nbconvert 7.17.2, ipykernel 7.4.0, python-dotenv 1.2.4, requests 2.34.2.
 
-**Запуск анализа:** `jupyter notebook` → откройте ноутбуки по порядку и выполните сверху вниз.
+**Запуск анализа (ключ не нужен)**
 
-**Проверка проекта:**
+Сырые данные уже лежат в `data/raw/`. Ноутбуки запускаются строго по порядку: `02_clean → 02_features → 03_eda → 04_model → 05_cams_vs_station` (что пишет каждый шаг — в таблице «Как устроен анализ»).
+
+```bash
+for nb in 02_clean 02_features 03_eda 04_model 05_cams_vs_station; do
+  .venv/bin/python -m jupyter nbconvert --to notebook --execute --inplace \
+    --ExecutePreprocessor.kernel_name=smog-almaty "notebooks/$nb.ipynb"
+done
+```
+
+Интерактивно: откройте `.venv/bin/python -m jupyter notebook`, выберите ядро `smog-almaty` (`Kernel → Change Kernel`) и выполните `Restart Kernel and Run All Cells` в том же порядке.
+
+Ожидаемый результат: прогон занимает около 2 минут; файлы в `data/processed/` и графики в `figures/` перезаписываются теми же результатами, а вывод ячеек совпадает с сохранённым в репозитории.
+
+**Повторная выгрузка данных (необязательно, нужен ключ OpenAQ)**
+
+- Зарегистрируйтесь на [explore.openaq.org/register](https://explore.openaq.org/register) (бесплатно) и скопируйте API-ключ в личном кабинете OpenAQ; для Open-Meteo ключ не нужен.
+- Создайте файл с ключом: `cp .env.example .env` и впишите его в `OPENAQ_API_KEY=` (файл `.env` в git не попадает — он указан в `.gitignore`).
+- Если файлы в `data/raw/` уже есть, `notebooks/01_collect.ipynb` только читает и проверяет их, в API не обращается и существующие CSV никогда не перезаписывает.
+- Для свежей выгрузки сделайте отдельную копию репозитория без `data/raw/*.csv`, выполните `notebooks/01_collect.ipynb`, а затем ноутбуки `02_clean`–`05_cams_vs_station`.
+- Данные API со временем могут обновляться, поэтому числа после новой выгрузки могут отличаться от наших.
+
+**Проверка проекта** (ruff + pytest)
 
 ```bash
 bash scripts/check.sh               # → GATE PASS
