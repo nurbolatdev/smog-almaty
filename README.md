@@ -66,23 +66,23 @@ flowchart LR
     A[OpenAQ<br/>PM2.5 станции] --> R[(data/raw)]
     B[Open-Meteo<br/>погода] --> R
     C[Open-Meteo<br/>CAMS] --> R
-    R --> M[Объединение<br/>по часу]
-    M --> CL[Очистка<br/>пропуски, дубликаты, выбросы]
-    CL --> P[(data/processed<br/>hourly / daily)]
-    P --> F[Признаки<br/>время, сезон, лаги]
-    F --> E[EDA и<br/>визуализация]
-    F --> S[Проверка<br/>гипотез H1–H4]
-    F --> ML[Модели<br/>LR · Random Forest]
+    R --> CL[Очистка · 02_clean<br/>UTC → Asia/Almaty, диапазоны, пропуски]
+    CL --> MF[Объединение и признаки · 02_features<br/>merge по time_utc, сезон, лаги, сутки]
+    MF --> P[(data/processed<br/>hourly / daily)]
+    P --> E[EDA и гипотезы H1–H3<br/>03_eda]
+    P --> ML[Модели · 04_model<br/>LR · Random Forest]
     ML --> EV[Оценка<br/>MAE · RMSE · R²]
+    P --> H4[H4: CAMS vs станция<br/>05_cams_vs_station]
 ```
 
-| Этап | Ноутбук / модуль | Методы |
-|---|---|---|
-| Сбор | `notebooks/01_collect.ipynb`, `src/collect.py` | `requests`, пагинация, учёт лимитов API |
-| Очистка и объединение | `notebooks/02_clean.ipynb`, `src/clean.py` | UTC → Asia/Almaty, `merge(validate=…)`, интерполяция коротких пропусков |
-| Признаки | `src/features.py` | час, день недели, месяц, сезон, отопительный сезон, лаги PM2.5 |
-| EDA | `notebooks/03_eda.ipynb` | распределения, сезонность, суточный цикл, корреляции |
-| Модели | `notebooks/04_model.ipynb` | Linear Regression (baseline), Random Forest, сравнение с наивным прогнозом |
+| Этап | Ноутбук / модуль | Методы | Результат |
+|---|---|---|---|
+| Сбор | `notebooks/01_collect.ipynb`, `src/collect.py` | `requests`, пагинация, учёт лимитов, повтор при 429 | `data/raw/openaq_pm25.csv`, `weather.csv`, `cams_aq.csv` |
+| Очистка | `notebooks/02_clean.ipynb`, `src/clean.py` | UTC → Asia/Almaty, проверка диапазонов, интерполяция только коротких пропусков (дыра целиком ≤ 3 ч) | `data/processed/pm25_clean.csv`, `weather_clean.csv`, `cams_clean.csv` |
+| Объединение и признаки | `notebooks/02_features.ipynb`, `src/features.py` | `merge(validate="one_to_one")` с проверкой числа строк, календарные признаки, отопительный сезон, штиль, суточное среднее (≥ 18 ч), лаг вчерашнего дня | `hourly.csv`, `daily.csv` |
+| EDA и гипотезы H1–H3, χ² | `notebooks/03_eda.ipynb`, `src/eda.py`, `src/hypotheses.py` | распределения, сезонность, суточный цикл, Спирмен, Welch t, Mann–Whitney U, bootstrap-CI, χ² | графики `00`–`07`, `11`–`16` |
+| Модели | `notebooks/04_model.ipynb`, `src/models.py` | наивный прогноз, Linear Regression, Random Forest, разбиение по времени, bootstrap разности MAE | графики `09`, `10`, `17` |
+| H4: CAMS против станции | `notebooks/05_cams_vs_station.ipynb`, `src/cams.py` | bias, MAE, Спирмен, bootstrap-CI | график `08` |
 
 **Методологические принципы**
 
@@ -98,13 +98,16 @@ smog-almaty/
 ├── assets/              оформление README
 ├── data/
 │   ├── raw/             сырые ответы API (не изменяются)
-│   └── processed/       очищенные таблицы hourly.csv, daily.csv
-├── figures/             графики для презентации
-├── notebooks/           01_collect → 02_clean → 03_eda → 04_model
+│   └── processed/       очищенные таблицы *_clean.csv, итоговые hourly.csv, daily.csv
+├── figures/             графики 00–17, сохраняются из ноутбуков
+├── notebooks/           01_collect → 02_clean → 02_features
+│                        → 03_eda → 04_model → 05_cams_vs_station
 ├── scripts/check.sh     проверка проекта: ruff + pytest
-├── src/                 функции сбора, очистки и признаков
+├── src/                 collect, clean, features, eda, hypotheses, models, cams
 ├── tests/               тесты для src/
 ├── .env.example         шаблон для API-ключа
+├── CONTRIBUTING.md      правила работы с ветками и PR
+├── LICENSE              лицензия MIT
 ├── pyproject.toml       настройки ruff и pytest
 └── requirements.txt     зависимости
 ```
@@ -250,5 +253,5 @@ bash scripts/check.sh               # → GATE PASS
 - Код — под лицензией [MIT](LICENSE).
 - Данные о качестве воздуха — [OpenAQ](https://openaq.org) (условия использования OpenAQ; первоисточник — AirNow, U.S. Department of State).
 - [Weather data by Open-Meteo.com](https://open-meteo.com/) — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-- Модельные данные о качестве воздуха — Copernicus Atmosphere Monitoring Service (CAMS) через Open-Meteo.
+- Модельные данные о качестве воздуха — Copernicus Atmosphere Monitoring Service (CAMS) через Open-Meteo (Contains modified Copernicus Atmosphere Monitoring Service information).
 - Норматив PM2.5 — [WHO Global Air Quality Guidelines, 2021](https://www.who.int/publications/i/item/9789240034228).
