@@ -114,7 +114,7 @@ smog-almaty/
 
 ## 🚀 Быстрый старт
 
-**Требования:** Python 3.11+ (проверено на 3.12.10), Git. Команды ниже — для macOS и Linux; в Windows вместо `.venv/bin/python` используйте `.venv\Scripts\python`.
+**Требования:** Python 3.11+ (проверено на 3.12.10), Git. Команды ниже — для macOS и Linux; в Windows — в Git Bash или WSL, путь `.venv/Scripts/python`; на Windows мы не проверяли.
 
 **Установка**
 
@@ -128,7 +128,8 @@ python3 -m venv .venv
 
 Ядро `smog-almaty` привязывает Jupyter к окружению `.venv`: без него ноутбук может запуститься в системном Python, где нет библиотек проекта.
 
-Проверено на: Python 3.12.10, pandas 3.1.1, numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, matplotlib 3.11.2, seaborn 0.13.2, jupyter 1.1.1, nbconvert 7.17.2, ipykernel 7.4.0, python-dotenv 1.2.4, requests 2.34.2.
+Проверено на: Python 3.12.10, pandas 3.1.1, numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, matplotlib 3.11.2, seaborn 0.13.2, jupyter 1.1.1, nbconvert 7.17.2, ipykernel 7.4.0, python-dotenv 1.2.4, requests 2.34.2, ruff 0.17.5, pytest 9.2.0.
+На Python 3.11 pip поставит более старые numpy и scipy (для numpy 2.5.4 и scipy 1.18.1 нужен Python ≥ 3.12); такой вариант мы не проверяли.
 
 **Запуск анализа (ключ не нужен)**
 
@@ -143,7 +144,7 @@ done
 
 Интерактивно: откройте `.venv/bin/python -m jupyter notebook`, выберите ядро `smog-almaty` (`Kernel → Change Kernel`) и выполните `Restart Kernel and Run All Cells` в том же порядке.
 
-Ожидаемый результат: прогон занимает около 2 минут; файлы в `data/processed/` и графики в `figures/` перезаписываются теми же результатами, а вывод ячеек совпадает с сохранённым в репозитории.
+Ожидаемый результат: прогон занимает около 2 минут; файлы в `data/processed/` и графики в `figures/` перезаписываются теми же результатами, а вывод ячеек совпадает с сохранённым в репозитории. Ноутбуки пересохраняются с новым выводом, поэтому `git status` покажет их изменёнными (метаданные), а `data/processed/` и `figures/` — без изменений.
 
 **Повторная выгрузка данных (необязательно, нужен ключ OpenAQ)**
 
