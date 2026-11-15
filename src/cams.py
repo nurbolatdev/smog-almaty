@@ -1,6 +1,8 @@
 """Сравнение модели CAMS с измерениями станции (гипотеза H4, этап 5)."""
 
+import numpy as np
 import pandas as pd
+from scipy import stats
 
 from src import features
 
@@ -64,3 +66,53 @@ def daily_pairs(
     assert len(out) == len(calendar), "merge с календарём изменил число суток"
     out["diff"] = out["cams_pm25"] - out["pm25"]
     return out
+
+
+def agreement_metrics(
+    df: pd.DataFrame,
+    station_column: str = "pm25",
+    model_column: str = "cams_pm25",
+) -> dict[str, float | int]:
+    """Метрики согласия модели со станцией: bias (µg/m³ и %), MAE, Пирсон и Спирмен."""
+    assert {station_column, model_column}.issubset(df.columns), (
+        "в таблице не хватает колонок для сравнения"
+    )
+    pairs = df[[station_column, model_column]].dropna()
+    assert len(pairs) >= 2, "нужно >= 2 пар без пропусков"
+    station = pairs[station_column].to_numpy(dtype=float)
+    model = pairs[model_column].to_numpy(dtype=float)
+    diff = model - station
+    # bias = среднее(CAMS − станция): знак < 0 означает, что CAMS занижает;
+    # MAE = среднее(|CAMS − станция|) в µg/m³
+    station_mean = float(np.mean(station))
+    assert station_mean != 0, "среднее станции равно нулю — bias_pct не определён"
+    bias = float(np.mean(diff))
+    # Пирсон (r) — линейная связь из постановки, Спирмен (ρ) — устойчив к пикам PM2.5
+    return {
+        "n": int(len(pairs)),
+        "station_mean": station_mean,
+        "cams_mean": float(np.mean(model)),
+        "bias": bias,
+        "bias_pct": float(bias / station_mean * 100.0),
+        "mae": float(np.mean(np.abs(diff))),
+        "pearson_r": float(np.corrcoef(station, model)[0, 1]),
+        "spearman_rho": float(stats.spearmanr(station, model).statistic),
+    }
+
+
+def bootstrap_means(
+    values: pd.Series | np.ndarray, n_boot: int = 5000, seed: int = 42
+) -> np.ndarray:
+    """Средние n_boot bootstrap-выборок с возвращением (лекция 8)."""
+    assert len(values) >= 2 and not pd.isna(values).any(), (
+        "в выборке должно быть >= 2 значений без пропусков"
+    )
+    assert n_boot >= 1, "число bootstrap-выборок должно быть >= 1"
+    data = np.asarray(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot, dtype=float)
+    # на каждом шаге тянем выборку с возвращением того же размера и считаем среднее
+    for i in range(n_boot):
+        sample = rng.choice(data, size=len(data), replace=True)
+        means[i] = np.mean(sample)
+    return means
