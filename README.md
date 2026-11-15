@@ -66,23 +66,23 @@ flowchart LR
     A[OpenAQ<br/>PM2.5 станции] --> R[(data/raw)]
     B[Open-Meteo<br/>погода] --> R
     C[Open-Meteo<br/>CAMS] --> R
-    R --> M[Объединение<br/>по часу]
-    M --> CL[Очистка<br/>пропуски, дубликаты, выбросы]
-    CL --> P[(data/processed<br/>hourly / daily)]
-    P --> F[Признаки<br/>время, сезон, лаги]
-    F --> E[EDA и<br/>визуализация]
-    F --> S[Проверка<br/>гипотез H1–H4]
-    F --> ML[Модели<br/>LR · Random Forest]
+    R --> CL[Очистка · 02_clean<br/>UTC → Asia/Almaty, диапазоны, пропуски]
+    CL --> MF[Объединение и признаки · 02_features<br/>merge по time_utc, сезон, лаги, сутки]
+    MF --> P[(data/processed<br/>hourly / daily)]
+    P --> E[EDA и гипотезы H1–H3<br/>03_eda]
+    P --> ML[Модели · 04_model<br/>LR · Random Forest]
     ML --> EV[Оценка<br/>MAE · RMSE · R²]
+    P --> H4[H4: CAMS vs станция<br/>05_cams_vs_station]
 ```
 
-| Этап | Ноутбук / модуль | Методы |
-|---|---|---|
-| Сбор | `notebooks/01_collect.ipynb`, `src/collect.py` | `requests`, пагинация, учёт лимитов API |
-| Очистка и объединение | `notebooks/02_clean.ipynb`, `src/clean.py` | UTC → Asia/Almaty, `merge(validate=…)`, интерполяция коротких пропусков |
-| Признаки | `src/features.py` | час, день недели, месяц, сезон, отопительный сезон, лаги PM2.5 |
-| EDA | `notebooks/03_eda.ipynb` | распределения, сезонность, суточный цикл, корреляции |
-| Модели | `notebooks/04_model.ipynb` | Linear Regression (baseline), Random Forest, сравнение с наивным прогнозом |
+| Этап | Ноутбук / модуль | Методы | Результат |
+|---|---|---|---|
+| Сбор | `notebooks/01_collect.ipynb`, `src/collect.py` | `requests`, пагинация, учёт лимитов, повтор при 429 | `data/raw/openaq_pm25.csv`, `weather.csv`, `cams_aq.csv` |
+| Очистка | `notebooks/02_clean.ipynb`, `src/clean.py` | UTC → Asia/Almaty, проверка диапазонов, интерполяция только коротких пропусков (дыра целиком ≤ 3 ч) | `data/processed/pm25_clean.csv`, `weather_clean.csv`, `cams_clean.csv` |
+| Объединение и признаки | `notebooks/02_features.ipynb`, `src/features.py` | `merge(validate="one_to_one")` с проверкой числа строк, календарные признаки, отопительный сезон, штиль, суточное среднее (≥ 18 ч), лаг вчерашнего дня | `hourly.csv`, `daily.csv` |
+| EDA и гипотезы H1–H3, χ² | `notebooks/03_eda.ipynb`, `src/eda.py`, `src/hypotheses.py` | распределения, сезонность, суточный цикл, Спирмен, Welch t, Mann–Whitney U, bootstrap-CI, χ² | графики `00`–`07`, `11`–`16` |
+| Модели | `notebooks/04_model.ipynb`, `src/models.py` | наивный прогноз, Linear Regression, Random Forest, разбиение по времени, bootstrap разности MAE | графики `09`, `10`, `17` |
+| H4: CAMS против станции | `notebooks/05_cams_vs_station.ipynb`, `src/cams.py` | bias, MAE, Спирмен, bootstrap-CI | график `08` |
 
 **Методологические принципы**
 
@@ -98,38 +98,63 @@ smog-almaty/
 ├── assets/              оформление README
 ├── data/
 │   ├── raw/             сырые ответы API (не изменяются)
-│   └── processed/       очищенные таблицы hourly.csv, daily.csv
-├── figures/             графики для презентации
-├── notebooks/           01_collect → 02_clean → 03_eda → 04_model
+│   └── processed/       очищенные таблицы *_clean.csv, итоговые hourly.csv, daily.csv
+├── figures/             графики 00–17, сохраняются из ноутбуков
+├── notebooks/           01_collect → 02_clean → 02_features
+│                        → 03_eda → 04_model → 05_cams_vs_station
 ├── scripts/check.sh     проверка проекта: ruff + pytest
-├── src/                 функции сбора, очистки и признаков
+├── src/                 collect, clean, features, eda, hypotheses, models, cams
 ├── tests/               тесты для src/
 ├── .env.example         шаблон для API-ключа
+├── CONTRIBUTING.md      правила работы с ветками и PR
+├── LICENSE              лицензия MIT
 ├── pyproject.toml       настройки ruff и pytest
 └── requirements.txt     зависимости
 ```
 
 ## 🚀 Быстрый старт
 
-**Требования:** Python 3.11+, Git.
+**Требования:** Python 3.11+ (проверено на 3.12.10), Git. Команды ниже — для macOS и Linux; в Windows — в Git Bash или WSL, путь `.venv/Scripts/python`; на Windows мы не проверяли.
+
+**Установка**
 
 ```bash
 git clone https://github.com/nurbolatdev/smog-almaty.git
 cd smog-almaty
-
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m ipykernel install --user --name smog-almaty
 ```
 
-**Ключ OpenAQ** нужен только для повторной выгрузки данных — готовые сырые данные лежат в `data/raw/`.
+Ядро `smog-almaty` привязывает Jupyter к окружению `.venv`: без него ноутбук может запуститься в системном Python, где нет библиотек проекта.
 
-1. Зарегистрируйтесь на [explore.openaq.org/register](https://explore.openaq.org/register) (бесплатно).
-2. `cp .env.example .env` и впишите ключ в `OPENAQ_API_KEY=`.
+Проверено на: Python 3.12.10, pandas 3.1.1, numpy 2.5.4, scipy 1.18.1, scikit-learn 1.9.1, matplotlib 3.11.2, seaborn 0.13.2, jupyter 1.1.1, nbconvert 7.17.2, ipykernel 7.4.0, python-dotenv 1.2.4, requests 2.34.2, ruff 0.17.5, pytest 9.2.0.
+На Python 3.11 pip поставит более старые numpy и scipy (для numpy 2.5.4 и scipy 1.18.1 нужен Python ≥ 3.12); такой вариант мы не проверяли.
 
-**Запуск анализа:** `jupyter notebook` → откройте ноутбуки по порядку и выполните сверху вниз.
+**Запуск анализа (ключ не нужен)**
 
-**Проверка проекта:**
+Сырые данные уже лежат в `data/raw/`. Ноутбуки запускаются строго по порядку: `02_clean → 02_features → 03_eda → 04_model → 05_cams_vs_station` (что пишет каждый шаг — в таблице «Как устроен анализ»).
+
+```bash
+for nb in 02_clean 02_features 03_eda 04_model 05_cams_vs_station; do
+  .venv/bin/python -m jupyter nbconvert --to notebook --execute --inplace \
+    --ExecutePreprocessor.kernel_name=smog-almaty "notebooks/$nb.ipynb"
+done
+```
+
+Интерактивно: откройте `.venv/bin/python -m jupyter notebook`, выберите ядро `smog-almaty` (`Kernel → Change Kernel`) и выполните `Restart Kernel and Run All Cells` в том же порядке.
+
+Ожидаемый результат: прогон занимает около 2 минут; файлы в `data/processed/` и графики в `figures/` перезаписываются теми же результатами, а вывод ячеек совпадает с сохранённым в репозитории. Ноутбуки пересохраняются с новым выводом, поэтому `git status` покажет их изменёнными (метаданные), а `data/processed/` и `figures/` — без изменений.
+
+**Повторная выгрузка данных (необязательно, нужен ключ OpenAQ)**
+
+- Зарегистрируйтесь на [explore.openaq.org/register](https://explore.openaq.org/register) (бесплатно) и скопируйте API-ключ в личном кабинете OpenAQ; для Open-Meteo ключ не нужен.
+- Создайте файл с ключом: `cp .env.example .env` и впишите его в `OPENAQ_API_KEY=` (файл `.env` в git не попадает — он указан в `.gitignore`).
+- Если файлы в `data/raw/` уже есть, `notebooks/01_collect.ipynb` только читает и проверяет их, в API не обращается и существующие CSV никогда не перезаписывает.
+- Для свежей выгрузки сделайте отдельную копию репозитория без `data/raw/*.csv`, выполните `notebooks/01_collect.ipynb`, а затем ноутбуки `02_clean`–`05_cams_vs_station`.
+- Данные API со временем могут обновляться, поэтому числа после новой выгрузки могут отличаться от наших.
+
+**Проверка проекта** (ruff + pytest)
 
 ```bash
 bash scripts/check.sh               # → GATE PASS
@@ -145,7 +170,7 @@ bash scripts/check.sh               # → GATE PASS
 - [x] **5.** Проверка гипотез H1–H4
 - [x] **6.** Моделирование
 - [x] **7.** Интерпретация результатов
-- [ ] **8.** README и воспроизводимость
+- [x] **8.** README и воспроизводимость
 - [ ] **9.** Презентация и защита
 
 ## 📊 Результаты
@@ -250,5 +275,5 @@ bash scripts/check.sh               # → GATE PASS
 - Код — под лицензией [MIT](LICENSE).
 - Данные о качестве воздуха — [OpenAQ](https://openaq.org) (условия использования OpenAQ; первоисточник — AirNow, U.S. Department of State).
 - [Weather data by Open-Meteo.com](https://open-meteo.com/) — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-- Модельные данные о качестве воздуха — Copernicus Atmosphere Monitoring Service (CAMS) через Open-Meteo.
+- Модельные данные о качестве воздуха — Copernicus Atmosphere Monitoring Service (CAMS) через Open-Meteo (Contains modified Copernicus Atmosphere Monitoring Service information).
 - Норматив PM2.5 — [WHO Global Air Quality Guidelines, 2021](https://www.who.int/publications/i/item/9789240034228).
